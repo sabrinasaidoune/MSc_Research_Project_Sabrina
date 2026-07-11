@@ -1,0 +1,126 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+---
+title: "tximport_all"
+output: html_document
+date: "2026-02-10"
+---
+```
+
+
+```{r}
+
+# Install packages (only needs to run once)
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install(c("tximport", "DESeq2", "rtracklayer"))
+install.packages("rlang")
+
+library(tximport)
+library(DESeq2)
+library(rtracklayer)
+library(dplyr)
+library(readr)
+```
+
+```{r}
+# Build tx2gene mapping from GTF (only needs to run once)
+gtf <- rtracklayer::import("Mus_musculus.GRCm39.109.gtf")
+
+tx_gtf <- gtf[!is.na(mcols(gtf)$transcript_id)]
+
+tx2gene <- data.frame(
+  TXNAME = gsub("\\.\\d+$", "", mcols(tx_gtf)$transcript_id),  # strip transcript version
+  GENEID = mcols(tx_gtf)$gene_id
+)
+
+tx2gene <- tx2gene[!duplicated(tx2gene$TXNAME), ]
+
+write.csv(tx2gene, "/Volumes/Sabrina/tx2gene.csv", row.names = FALSE)
+
+head(tx2gene)
+```
+
+```{r}
+# Define sample names and their Salmon quant folders
+samples <- c(
+  "03-11-2O_young",
+  "06-10-2O_old",
+  "08-11-2O_young",
+  "13-10-2O_young",
+  "18-08-2O_old",
+  "23-05-2O_old",
+  "29-09-2O_old",
+  "30-06-2O_young"
+)
+
+salmon_base_dir <- "/Volumes/Sabrina/aligned_quant/salmon_quant_v2"
+output_dir <- "/Volumes/Sabrina/tximport_results"
+dir.create(output_dir, showWarnings = FALSE)
+
+tx2gene <- read_csv("/Volumes/Sabrina/tx2gene.csv", show_col_types = FALSE)
+```
+
+```{r}
+# Run tximport for every sample and export counts + abundance
+for (sample in samples) {
+
+  salmon_file <- file.path(salmon_base_dir, paste0("trimmed_", sample), "quant.sf")
+
+  sf <- read_tsv(salmon_file, show_col_types = FALSE)
+  sf$TXNAME_nover <- sub("\\.\\d+$", "", sf$Name)
+
+  tx2gene_subset <- tx2gene %>% filter(TXNAME %in% sf$TXNAME_nover)
+  tx2gene_subset <- tx2gene_subset[!duplicated(tx2gene_subset$TXNAME), ]
+
+  txi_single <- tximport(salmon_file,
+                          type = "salmon",
+                          tx2gene = tx2gene_subset,
+                          ignoreTxVersion = TRUE)
+
+  write.csv(txi_single$counts,    file.path(output_dir, paste0(sample, "_counts.csv")))
+  write.csv(txi_single$abundance, file.path(output_dir, paste0(sample, "_abundance.csv")))
+
+  cat("Exported counts and abundance for", sample, "\n")
+}
+```
+
+```{r}
+# Merge all per-sample counts into one matrix
+counts_files <- list.files(output_dir, pattern = "_counts.csv$", full.names = TRUE)
+
+counts_list <- lapply(counts_files, function(f) {
+  df <- read_csv(f, show_col_types = FALSE)
+  colnames(df)[1] <- "GeneID"
+  df
+})
+names(counts_list) <- gsub("_counts.csv", "", basename(counts_files))
+
+counts_matrix <- Reduce(function(x, y) full_join(x, y, by = "GeneID"), counts_list)
+colnames(counts_matrix)[-1] <- names(counts_list)
+
+write.csv(counts_matrix, file.path(output_dir, "all_samples_counts_matrix.csv"), row.names = FALSE)
+cat("Merged counts matrix exported\n")
+```
+
+```{r}
+# Merge all per-sample abundance into one matrix
+abundance_files <- list.files(output_dir, pattern = "_abundance.csv$", full.names = TRUE)
+
+abundance_list <- lapply(abundance_files, function(f) {
+  df <- read_csv(f, show_col_types = FALSE)
+  colnames(df)[1] <- "GeneID"
+  df
+})
+names(abundance_list) <- gsub("_abundance.csv", "", basename(abundance_files))
+
+abundance_matrix <- Reduce(function(x, y) full_join(x, y, by = "GeneID"), abundance_list)
+colnames(abundance_matrix)[-1] <- names(abundance_list)
+
+write.csv(abundance_matrix, file.path(output_dir, "all_samples_abundance_matrix.csv"), row.names = FALSE)
+cat("Merged abundance matrix exported\n")
+```
+

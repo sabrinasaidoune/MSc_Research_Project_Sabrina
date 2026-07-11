@@ -1,0 +1,14 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.RDataTmp*
+rsconnect/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Logs and intermediate files
+*.log
+*.tmp

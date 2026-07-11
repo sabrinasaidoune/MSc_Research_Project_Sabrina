@@ -1,0 +1,382 @@
+---
+title: "proteomics_cleaning"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+
+prot_path_cellular  <- "proteomics/Singh-Cellular-20713-4-V2/tables/Table-19.txt"
+prot_path_soluble <- "proteomics/Singh-Soluble-20747-7/tables/Table-17.txt"
+
+prot_raw_soluble <- read_tsv(prot_path_soluble, show_col_types = FALSE)
+prot_raw_cellular <- read_tsv(prot_path_cellular, show_col_types = FALSE)
+
+meta_cols <- c(
+  "PG.ProteinGroups", "PG.Genes",
+  "PG.ProteinDescriptions", "PG.UniProtIds", "PG.FastaFiles",
+  "PG.Database", "PG.OrganismId", "PG.MolecularWeight",
+  "PG.NrOfPrecursorsIdentified (Experiment-wide)",
+  "GOMF name", "GOBP slim name", "KEGG name", "GOCC slim name"
+)
+
+# Define cleaning function to avoid repetition
+clean_proteomics <- function(prot_raw, output_name) {
+  
+  # Per-sample log2 abundance columns
+  log2_cols <- grep("\\.Quantity\\.log2$", names(prot_raw), value = TRUE)
+  
+  # Statistical result columns
+  stat_cols <- grep(
+    "^(p\\.value|adj\\.p\\.value|log2\\.fold\\.change|is\\.significant|t\\.statistic)\\.",
+    names(prot_raw), value = TRUE
+  )
+  
+  # Per-sample precursor count columns
+  precursor_quant_cols <- grep("\\.NrOfPrecursorsUsedForQuantification$",
+                               names(prot_raw), value = TRUE)
+  
+  prot_clean <- prot_raw %>%
+    select(all_of(c(meta_cols, log2_cols, stat_cols))) %>%
+    
+    mutate(
+      gene_symbol         = str_split(PG.Genes, ";", simplify = TRUE)[, 1],
+      gene_symbol         = na_if(str_trim(gene_symbol), ""),
+      uniprot_id          = str_split(PG.UniProtIds, ";", simplify = TRUE)[, 1],
+      protein_description = str_split(PG.ProteinDescriptions, ";", simplify = TRUE)[, 1],
+      mol_weight_da       = as.numeric(
+                              str_split(PG.MolecularWeight, ";", simplify = TRUE)[, 1]
+                            )
+    ) %>%
+    
+    # Convert NaN -> NA
+    mutate(across(all_of(log2_cols), ~ na_if(., NaN))) %>%
+    
+    # Per-row QC metrics
+    mutate(
+      n_samples_detected   = rowSums(!is.na(across(all_of(log2_cols)))),
+      pct_samples_detected = round(100 * n_samples_detected / length(log2_cols), 1),
+      
+      median_precursors_used = if (length(precursor_quant_cols) > 0)
+        apply(prot_raw[, precursor_quant_cols], 1,
+              function(x) median(x[x > 0], na.rm = TRUE))
+      else NA_real_
+    ) %>%
+    
+    # Filter for reliability
+    filter(is.na(median_precursors_used) | median_precursors_used >= 2) %>%
+    
+    # Per-time point mean log2 abundance
+    {
+      tp <- c("D14", "D21", "M03", "M06", "M12", "M18")
+      df <- .
+      for (t in tp) {
+        cols_t <- grep(paste0("^", t, "\\..*\\.Quantity\\.log2$"),
+                       names(df), value = TRUE)
+        if (length(cols_t) > 0) {
+          df[[paste0("mean_log2_", t)]] <- rowMeans(df[, cols_t], na.rm = TRUE)
+        }
+      }
+      df
+    } %>%
+    
+    rename(
+      protein_groups        = PG.ProteinGroups,
+      n_precursors_exp      = `PG.NrOfPrecursorsIdentified (Experiment-wide)`,
+      go_molecular_function = `GOMF name`,
+      go_biological_process = `GOBP slim name`,
+      go_cellular_component = `GOCC slim name`,
+      kegg_pathway          = `KEGG name`
+    ) %>%
+    
+    select(
+      # Identifiers
+      gene_symbol, uniprot_id, protein_groups, protein_description,
+      mol_weight_da, n_precursors_exp,
+      # QC
+      n_samples_detected, pct_samples_detected,
+      median_precursors_used,
+      # Per-timepoint summaries
+      starts_with("mean_log2_"),
+      # Per-sample log2 values
+      all_of(log2_cols),
+      # Statistics
+      all_of(stat_cols),
+      # Annotations
+      go_molecular_function, go_biological_process,
+      go_cellular_component, kegg_pathway
+    )
+  
+  write_csv(prot_clean, output_name, na = "")
+  message("✔ Wrote ", output_name, " (", nrow(prot_clean), " rows)")
+  
+  return(prot_clean)
+}
+
+# Apply to both datasets
+prot_cellular_clean <- clean_proteomics(prot_raw_cellular, "cellular_proteomics_clean_v2.csv")
+prot_soluble_clean <- clean_proteomics(prot_raw_soluble, "soluble_proteomics_clean_v2.csv")
+```
+
+cleaning the insoluble data
+
+
+```{r}
+# =============================================================================
+# REFORMAT INSOLUBLE FRACTION
+# Converts InsolubleFraction_Astral.xlsx into the same structure as
+# cellular_proteomics_clean_v2.csv and soluble_proteomics_clean_v2.csv
+#
+# INPUT:  InsolubleFraction_Astral.xlsx
+# OUTPUT: insoluble_proteomics_clean_v2.csv
+# =============================================================================
+
+options(stringsAsFactors = FALSE)
+
+library(readxl)    # read Excel files
+library(dplyr)     # data manipulation
+library(tidyr)     # reshaping
+
+# =============================================================================
+# 1. READ THE INSOLUBLE EXCEL FILE
+# Skip the first row (it contains a merged header "log2 normalized abundance...")
+# The actual column names are on row 2
+# =============================================================================
+
+insol_raw <- read_excel(
+  "results/tables/InsolubleFraction_Astral.xlsx",
+  sheet = 1,
+  skip  = 1    # skip the merged header row; row 2 becomes the column names
+)
+
+cat("Raw dimensions:", nrow(insol_raw), "rows x", ncol(insol_raw), "cols\n")
+cat("Column names:\n")
+print(names(insol_raw))
+
+# =============================================================================
+# 2. RENAME IDENTIFIER COLUMNS to match cellular/soluble
+# Raw names: PG.ProteinAccessions, Gene Name, PG.ProteinDescriptions, PG.ProteinNames
+# Target:    uniprot_id,            gene_symbol, protein_description,  protein_groups
+# =============================================================================
+
+insol <- insol_raw %>%
+  rename(
+    uniprot_id          = PG.ProteinAccessions,
+    gene_symbol         = `Gene Name`,
+    protein_description = PG.ProteinDescriptions,
+    protein_groups      = PG.ProteinNames       # closest equivalent to protein_groups
+  )
+
+# =============================================================================
+# 3. IDENTIFY SAMPLE COLUMNS AND MAP TO TIMEPOINTS
+# Column name pattern: "[N] PR807_MS2_XC_YYD/M_Astral.htrms.PG.Quantity"
+# Timepoint codes in raw data: 14D, 21D, 3M, 6M, 12M, 18M
+# Target timepoint labels:     D14, D21, M03, M06, M12, M18
+# =============================================================================
+
+# All quantity columns (everything except the 4 identifier columns)
+id_cols      <- c("uniprot_id", "gene_symbol", "protein_description", "protein_groups")
+sample_cols  <- setdiff(names(insol), id_cols)
+
+# Function to extract timepoint label from raw column name
+get_timepoint <- function(col) {
+  dplyr::case_when(
+    grepl("14D",  col) ~ "D14",
+    grepl("21D",  col) ~ "D21",
+    grepl("_3M_", col) ~ "M03",
+    grepl("_6M_", col) ~ "M06",
+    grepl("12M",  col) ~ "M12",
+    grepl("18M",  col) ~ "M18",
+    TRUE               ~ NA_character_
+  )
+}
+
+# Map each sample column to its timepoint
+col_tp_map <- data.frame(
+  raw_col   = sample_cols,
+  timepoint = vapply(sample_cols, get_timepoint, character(1)),
+  stringsAsFactors = FALSE
+)
+
+cat("\nTimepoint mapping:\n")
+print(col_tp_map)
+
+# Verify all columns were mapped
+if (any(is.na(col_tp_map$timepoint))) {
+  warning("Some columns could not be mapped to a timepoint — check col_tp_map")
+}
+
+# =============================================================================
+# 4. RENAME SAMPLE COLUMNS to match cellular/soluble format:
+# e.g. "D14.20713.Quantity.log2"
+# Since insoluble sample IDs differ, we use rep index (1-5) per timepoint
+# =============================================================================
+
+tp_levels <- c("D14", "D21", "M03", "M06", "M12", "M18")
+
+# Build new column names: timepoint.repN.Quantity.log2
+col_tp_map <- col_tp_map %>%
+  group_by(timepoint) %>%
+  mutate(rep_n    = row_number(),
+         new_col  = paste0(timepoint, ".rep", rep_n, ".Quantity.log2")) %>%
+  ungroup()
+
+# Rename the columns in the dataframe
+rename_vec <- setNames(col_tp_map$raw_col, col_tp_map$new_col)
+insol      <- insol %>% rename(all_of(rename_vec))
+
+cat("\nRenamed sample columns:\n")
+print(names(insol))
+
+# =============================================================================
+# 5. COMPUTE MEAN LOG2 INTENSITY PER TIMEPOINT
+# Matches columns like mean_log2_D14, mean_log2_M03 etc. in cellular/soluble
+# =============================================================================
+
+get_tp_cols <- function(df, tp) {
+  grep(paste0("^", tp, "\\.rep"), names(df), value = TRUE)
+}
+
+for (tp in tp_levels) {
+  cols <- get_tp_cols(insol, tp)
+  if (length(cols) > 0) {
+    col_name        <- paste0("mean_log2_", tp)
+    insol[[col_name]] <- rowMeans(insol[, cols, drop = FALSE], na.rm = TRUE)
+  }
+}
+
+# =============================================================================
+# 6. COMPUTE DETECTION METRICS
+# n_samples_detected : number of samples where the protein was detected (non-NA)
+# pct_samples_detected: percentage of all samples with detection
+# =============================================================================
+
+all_sample_cols <- col_tp_map$new_col
+n_total_samples <- length(all_sample_cols)
+
+insol$n_samples_detected  <- rowSums(!is.na(insol[, all_sample_cols]))
+insol$pct_samples_detected <- round(
+  100 * insol$n_samples_detected / n_total_samples, 2
+)
+
+# =============================================================================
+# 7. ARRANGE COLUMNS IN SAME ORDER AS CELLULAR/SOLUBLE
+# id cols | QC cols | mean_log2 per tp | sample Quantity.log2 cols
+# Note: mol_weight_da, n_precursors_exp, median_precursors_used not available
+#       in the insoluble file — filled with NA for compatibility
+# =============================================================================
+
+# Ordered mean log2 columns
+mean_cols <- paste0("mean_log2_", tp_levels)
+mean_cols <- mean_cols[mean_cols %in% names(insol)]
+
+# Ordered sample columns (by timepoint then replicate)
+ordered_sample_cols <- col_tp_map %>%
+  arrange(match(timepoint, tp_levels), rep_n) %>%
+  pull(new_col)
+
+# Add placeholder columns that exist in cellular/soluble but not insoluble
+insol$mol_weight_da        <- NA_real_
+insol$n_precursors_exp     <- NA_integer_
+insol$median_precursors_used <- NA_real_
+
+# Placeholder annotation columns
+insol$go_molecular_function <- NA_character_
+insol$go_biological_process <- NA_character_
+insol$go_cellular_component <- NA_character_
+insol$kegg_pathway          <- NA_character_
+
+# Assemble in final order
+final_col_order <- c(
+  "gene_symbol",
+  "uniprot_id",
+  "protein_groups",
+  "protein_description",
+  "mol_weight_da",
+  "n_precursors_exp",
+  "n_samples_detected",
+  "pct_samples_detected",
+  "median_precursors_used",
+  mean_cols,
+  ordered_sample_cols,
+  "go_molecular_function",
+  "go_biological_process",
+  "go_cellular_component",
+  "kegg_pathway"
+)
+
+# Keep only columns that exist
+final_col_order <- final_col_order[final_col_order %in% names(insol)]
+insol_final     <- insol[, final_col_order]
+
+# =============================================================================
+# 8. SAVE OUTPUT
+# =============================================================================
+
+write.csv(insol_final, "insoluble_proteomics_clean_v2.csv", row.names = FALSE)
+
+cat("\nDone! Output saved to: insoluble_proteomics_clean_v2.csv\n")
+cat("Dimensions:", nrow(insol_final), "proteins x", ncol(insol_final), "columns\n")
+cat("\nColumn names in output:\n")
+print(names(insol_final))
+```
+
+
+visualisation and batch correction
+
+```{r}
+library(tidyverse)
+library(patchwork)
+
+# ---- Colourblind-safe palette (Okabe-Ito), avoiding red/green pairing ----
+fraction_colours <- c(
+  "Cellular"  = "#0072B2",  # blue
+  "Soluble"   = "#E69F00",  # orange
+  "Insoluble" = "#009E73"   # bluish green
+)
+
+batch_colours <- c(
+  "Exploris480_cellular" = "#0072B2",
+  "Exploris480_soluble"  = "#E69F00",
+  "Astral_insoluble"     = "#009E73"
+)
+
+# ---- Panel A: total protein counts per fraction ----
+p_counts <- ggplot(protein_counts, aes(x = Fraction, y = Total_Proteins, fill = Fraction)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = Total_Proteins), vjust = -0.6, size = 4.5, fontface = "bold") +
+  scale_fill_manual(values = fraction_colours) +
+  labs(title = "Total proteins identified per fraction",
+       x = "", y = "Number of proteins identified") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        axis.title = element_text(size = 16, face = "bold"),  # ← axis title bigger + bold
+        axis.text = element_text(size = 14, face = "bold")) +  # ← axis labels bigger + bold
+  scale_y_continuous(limits = c(0, max(protein_counts$Total_Proteins) * 1.15))
+
+# ---- Panel B: PCA before/after ComBat ----
+p_combat <- ggplot(pca_combined, aes(x = PC1, y = PC2, colour = Batch)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  facet_wrap(~Stage) +
+  scale_colour_manual(values = batch_colours) +
+  labs(title = "PCA before and after ComBat batch correction",
+       subtitle = "Shared proteins across cellular, soluble, and insoluble fractions") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        axis.title = element_text(size = 16, face = "bold"),  # ← axis title bigger + bold
+        axis.text = element_text(size = 14, face = "bold"))   # ← axis labels bigger + bold
+
+# ---- Combine into a patchwork figure ----
+final_figure <- (p_counts | p_combat) +
+  plot_layout(widths = c(1, 2)) +
+  plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(face = "bold", size = 16))
+
+final_figure
+
+ggsave("protein_detection_overview_patchwork.pdf", final_figure, width = 14, height = 6)
+ggsave("protein_detection_overview_patchwork.png", final_figure, width = 14, height = 6, dpi = 300, bg = "white")
+```

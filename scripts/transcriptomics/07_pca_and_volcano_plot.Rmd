@@ -1,0 +1,108 @@
+---
+title: "PCA and volcano plot"
+output: html_notebook
+---
+
+1. PCA and volcano plot
+
+```{r}
+library(DESeq2)
+library(ggplot2)
+library(EnhancedVolcano)
+library(tidyverse)
+library(patchwork)
+
+# ── Shared theme ──────────────────────────────────────────────────────
+base_theme <- theme_bw() +
+  theme(
+    panel.grid.major = element_line(colour = "grey90"),
+    panel.grid.minor = element_blank(),
+    axis.title       = element_text(size = 14, face = "bold"),  # ← increased size, added bold
+    axis.text        = element_text(size = 12, face = "bold"),  # ← increased size, added bold
+    legend.title     = element_text(size = 11, face = "bold"),
+    legend.text      = element_text(size = 10),
+    legend.position  = "top",
+    plot.title       = element_text(size = 13, face = "bold"),
+    plot.tag         = element_text(size = 15, face = "bold")
+  )
+
+# ── Panel A: PCA ──────────────────────────────────────────────────────
+dds_all <- readRDS("data/transcriptomics/dds_all.rds")
+rld     <- rlog(dds_all, blind = TRUE)
+
+pcaData    <- plotPCA(rld, intgroup = "age", returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+pcaData$age <- factor(pcaData$age, levels = c("young", "old"))
+pcaData$clean_label <- ave(
+  as.character(pcaData$age), pcaData$age,
+  FUN = function(x) paste0(tools::toTitleCase(x[1]), " ", seq_along(x))
+)
+
+pca_plot <- ggplot(pcaData, aes(x = PC1, y = PC2, colour = age, label = clean_label)) +
+  geom_point(size = 4, alpha = 0.9) +
+  scale_colour_manual(values = c("young" = "#00BFC4", "old" = "#F8766D"),
+                      labels = c("Young", "Old")) +
+  labs(
+    x      = paste0("PC1 (", percentVar[1], "%)"),
+    y      = paste0("PC2 (", percentVar[2], "%)"),
+    colour = "Group",
+    tag    = "A",
+    title  = "Principal Component Analysis"
+  ) +
+  base_theme +
+  theme(aspect.ratio = 1)
+
+# ── Panel B: Volcano ──────────────────────────────────────────────────
+df <- read.csv("data/transcriptomics/deseq_results_with_symbols.csv") %>%
+  filter(!is.na(padj), !is.na(gene_symbol), gene_symbol != "")
+
+DEG_annotOrdered <- df %>% arrange(padj)
+top_genes        <- head(DEG_annotOrdered$gene_symbol, 17)
+y_max            <- ceiling(max(-log10(DEG_annotOrdered$padj), na.rm = TRUE)) + 1
+
+volcano_plot <- EnhancedVolcano(
+  DEG_annotOrdered,
+  lab             = DEG_annotOrdered$gene_symbol,
+  selectLab       = top_genes,
+  parseLabels     = FALSE,
+  col             = c("grey70", "#00A087", "#6DBBE1", "red"),
+  x               = "log2FoldChange",
+  y               = "padj",
+  FCcutoff        = 2.0,
+  pCutoff         = 0.05,
+  pointSize       = 0.8,
+  labSize         = 3.0,
+  legendIconSize  = 4,
+  colAlpha        = 0.5,
+  borderWidth     = 0,
+  xlim            = c(-8, 8),
+  ylim            = c(0, y_max),
+  title           = "Differentially Expressed Genes",
+  subtitle        = "adj. p < 0.05  |  |log.FC| > 2",
+  caption         = paste0("total = ", nrow(DEG_annotOrdered), " variables"),
+  axisLabSize     = 10,
+  titleLabSize    = 12,
+  subtitleLabSize = 9,
+  legendLabSize   = 8,
+  captionLabSize  = 8,
+  drawConnectors  = FALSE,
+  boxedLabels     = FALSE,
+  gridlines.major = FALSE,
+  gridlines.minor = FALSE,
+  cutoffLineType  = "dashed",
+  cutoffLineWidth = 0.4,
+  xlab            = bquote(~Log[2] ~ "fold change"),
+  ylab            = bquote(-Log[10] ~ "adjusted p-value")
+) +
+  labs(tag = "B") +
+  base_theme
+
+# ── Combine and save ──────────────────────────────────────────────────
+combined <- pca_plot + volcano_plot + plot_layout(ncol = 2, widths = c(1, 1))
+
+ggsave("deseq_pca_volcano.pdf", plot = combined, width = 30, height = 14, units = "cm")
+message("✔ Saved deseq_pca_volcano.pdf")
+```
+```
+

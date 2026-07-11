@@ -1,0 +1,541 @@
+---
+title: "10_welch_t_test_with_bh"
+output: html_notebook
+---
+
+ welch with bh
+ 
+```{r}
+options(stringsAsFactors = FALSE)
+
+# =========================
+# INPUT
+# =========================
+file_cellular <- "cellular_proteomics_clean_v2.csv"
+file_soluble  <- "soluble_proteomics_clean_v2.csv"
+file_insoluble <- "insoluble_proteomics_clean_v2.csv"
+
+# Expected groups/timepoints (script keeps only those found)
+groups <- c("D14","D21","M03","M06","M12","M18")
+
+fdr_cutoff <- 0.05
+min_reps <- 2
+
+# Outputs
+out_gene_level <- "welchBH_cellular_soluble_gene_level.csv"
+out_summary <- "welchBH_cellular_soluble_summary.csv"
+out_overlap <- "welchBH_cellular_soluble_overlap.csv"
+
+# =========================
+# HELPERS
+# =========================
+id_pref <- c("gene_symbol","uniprot_id","protein_groups","protein_description","mol_weight_da")
+
+get_qcols <- function(nms) grep("Quantity\\.log2$", nms, value = TRUE)
+
+extract_group <- function(col, groups) {
+  hit <- groups[sapply(groups, function(g) {
+    grepl(paste0("(^|[^A-Za-z0-9])", g, "([^A-Za-z0-9]|$)"), col, perl = TRUE)
+  })]
+  if (length(hit) == 0) return(NA_character_)
+  hit[1]
+}
+
+run_one_dataset <- function(df, dataset_name, groups, min_reps = 2, fdr_cutoff = 0.05) {
+  id_cols <- intersect(id_pref, names(df))
+  if (length(id_cols) == 0) {
+    df$row_id <- seq_len(nrow(df))
+    id_cols <- "row_id"
+  }
+
+  qcols <- get_qcols(names(df))
+  if (length(qcols) == 0) stop("No Quantity.log2 columns found in: ", dataset_name)
+
+  colmap <- data.frame(
+    column_name = qcols,
+    group = vapply(qcols, extract_group, FUN.VALUE = character(1), groups = groups),
+    stringsAsFactors = FALSE
+  )
+  colmap <- colmap[!is.na(colmap$group), , drop = FALSE]
+  if (nrow(colmap) == 0) stop("No group-matched Quantity.log2 columns in: ", dataset_name)
+
+  gs <- sort(unique(colmap$group))
+  if (length(gs) < 2) stop("Need at least 2 groups in: ", dataset_name)
+
+  pairs <- combn(gs, 2, simplify = FALSE)
+
+  all_gene <- list()
+  all_sum <- list()
+
+  for (pr in pairs) {
+    ga <- pr[1]
+    gb <- pr[2]
+
+    cols_a <- colmap$column_name[colmap$group == ga]
+    cols_b <- colmap$column_name[colmap$group == gb]
+
+    n <- nrow(df)
+    pvals <- rep(NA_real_, n)
+    stats <- rep(NA_real_, n)
+    log2fc <- rep(NA_real_, n)
+    n_a <- integer(n)
+    n_b <- integer(n)
+
+    for (i in seq_len(n)) {
+      a <- as.numeric(df[i, cols_a, drop = TRUE]); a <- a[!is.na(a)]
+      b <- as.numeric(df[i, cols_b, drop = TRUE]); b <- b[!is.na(b)]
+
+      n_a[i] <- length(a)
+      n_b[i] <- length(b)
+
+      if (length(a) < min_reps || length(b) < min_reps) next
+
+      tt <- tryCatch(
+        t.test(b, a, var.equal = FALSE, alternative = "two.sided"),  # Welch
+        error = function(e) NULL
+      )
+      if (is.null(tt)) next
+
+      pvals[i] <- tt$p.value
+      stats[i] <- unname(tt$statistic)
+      log2fc[i] <- mean(b) - mean(a)  # gb - ga
+    }
+
+    # BH correction PER comparison in this dataset
+    p_adj <- p.adjust(pvals, method = "BH")
+    is_sig <- !is.na(p_adj) & (p_adj < fdr_cutoff)
+
+    gene_tbl <- cbind(
+      df[, id_cols, drop = FALSE],
+      dataset = dataset_name,
+      group_a = ga,
+      group_b = gb,
+      comparison = paste0(gb, "_vs_", ga),
+      p_value = pvals,
+      p_adj = p_adj,
+      statistic = stats,
+      log2fc = log2fc,
+      n_group_a = n_a,
+      n_group_b = n_b,
+      is_significant = is_sig,
+      stringsAsFactors = FALSE
+    )
+    all_gene[[length(all_gene) + 1]] <- gene_tbl
+
+    n_tested <- sum(!is.na(pvals))
+    n_sig <- sum(is_sig, na.rm = TRUE)
+
+    all_sum[[length(all_sum) + 1]] <- data.frame(
+      dataset = dataset_name,
+      group_a = ga,
+      group_b = gb,
+      comparison = paste0(gb, "_vs_", ga),
+      n_cols_a = length(cols_a),
+      n_cols_b = length(cols_b),
+      n_rows_total = nrow(df),
+      n_tested = n_tested,
+      n_significant = n_sig,
+      pct_significant_of_tested = ifelse(n_tested > 0, round(100 * n_sig / n_tested, 3), NA_real_),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  list(
+    gene = do.call(rbind, all_gene),
+    summary = do.call(rbind, all_sum)
+  )
+}
+
+pick_gene_id <- function(tbl) {
+  prefs <- c("gene_symbol","uniprot_id","protein_groups","row_id")
+  x <- intersect(prefs, names(tbl))
+  if (length(x) == 0) stop("No gene ID column found.")
+  x[1]
+}
+
+# =========================
+# RUN ALL DATASETS
+# =========================
+cell <- read.csv(file_cellular, check.names = FALSE, stringsAsFactors = FALSE)
+sol  <- read.csv(file_soluble,  check.names = FALSE, stringsAsFactors = FALSE)
+insol <- read.csv(file_insoluble, check.names = FALSE, stringsAsFactors = FALSE)
+
+res_cell <- run_one_dataset(cell, "cellular", groups, min_reps, fdr_cutoff)
+res_sol  <- run_one_dataset(sol,  "soluble",  groups, min_reps, fdr_cutoff)
+res_insol <- run_one_dataset(insol, "insoluble", groups, min_reps, fdr_cutoff)
+
+gene_all <- rbind(res_cell$gene, res_sol$gene)
+sum_all  <- rbind(res_cell$summary, res_sol$summary)
+
+# =========================
+# OVERLAP: significant genes in BOTH datasets for same comparison
+# =========================
+gene_id_col <- pick_gene_id(gene_all)
+
+sig <- gene_all[gene_all$is_significant %in% TRUE, , drop = FALSE]
+sig <- unique(sig[, c("dataset","comparison","group_a","group_b",gene_id_col), drop = FALSE])
+
+overlap_rows <- list()
+if (nrow(sig) > 0) {
+  comps <- unique(sig[, c("comparison","group_a","group_b"), drop = FALSE])
+
+  for (i in seq_len(nrow(comps))) {
+    cmp <- comps$comparison[i]
+    ga <- comps$group_a[i]
+    gb <- comps$group_b[i]
+
+    sub <- sig[sig$comparison == cmp & sig$group_a == ga & sig$group_b == gb, , drop = FALSE]
+
+    g_cell <- unique(sub[sub$dataset == "cellular", gene_id_col, drop = TRUE])
+    g_sol  <- unique(sub[sub$dataset == "soluble",  gene_id_col, drop = TRUE])
+    g_insol <- unique(sub[sub$dataset == "insoluble", gene_id_col, drop = TRUE])
+
+    if (length(g_cell) == 0 && length(g_sol) == 0) next
+
+    ov_cell_sol   <- intersect(g_cell, g_sol)
+    ov_cell_insol <- intersect(g_cell, g_insol)
+    ov_sol_insol  <- intersect(g_sol,  g_insol)
+    ov_all_three  <- Reduce(intersect, list(g_cell, g_sol, g_insol))
+
+    overlap_rows[[length(overlap_rows) + 1]] <- data.frame(
+      comparison          = cmp,
+      group_a             = ga,
+      group_b             = gb,
+      n_sig_cellular      = length(g_cell),
+      n_sig_soluble       = length(g_sol),
+      n_sig_insoluble     = length(g_insol),
+      n_overlap_cell_sol  = length(ov_cell_sol),
+      n_overlap_cell_insol = length(ov_cell_insol),
+      n_overlap_sol_insol = length(ov_sol_insol),
+      n_overlap_all_three = length(ov_all_three),
+      overlap_cell_sol    = paste(ov_cell_sol,   collapse = ";"),
+      overlap_cell_insol  = paste(ov_cell_insol, collapse = ";"),
+      overlap_sol_insol   = paste(ov_sol_insol,  collapse = ";"),
+      overlap_all_three   = paste(ov_all_three,  collapse = ";"),
+      stringsAsFactors = FALSE
+    )
+  }
+}
+if (length(overlap_rows) > 0) {
+  overlap_tbl <- do.call(rbind, overlap_rows)
+} else {
+  overlap_tbl <- data.frame(
+    comparison           = character(0),
+    group_a              = character(0),
+    group_b              = character(0),
+    n_sig_cellular       = integer(0),
+    n_sig_soluble        = integer(0),
+    n_sig_insoluble      = integer(0),
+    n_overlap_cell_sol   = integer(0),
+    n_overlap_cell_insol = integer(0),
+    n_overlap_sol_insol  = integer(0),
+    n_overlap_all_three  = integer(0),
+    overlap_cell_sol     = character(0),
+    overlap_cell_insol   = character(0),
+    overlap_sol_insol    = character(0),
+    overlap_all_three    = character(0),
+    stringsAsFactors = FALSE
+  )
+}
+
+
+# =========================
+# WRITE OUTPUTS
+# =========================
+write.csv(gene_all, out_gene_level, row.names = FALSE)
+write.csv(sum_all, out_summary, row.names = FALSE)
+write.csv(overlap_tbl, out_overlap, row.names = FALSE)
+
+cat("\nDone. Wrote:\n")
+cat("-", out_gene_level, "\n")
+cat("-", out_summary, "\n")
+cat("-", out_overlap, "\n")
+
+cat("\nSummary preview:\n")
+print(sum_all)
+```
+
+
+
+welch pairwise m03-> m18
+
+
+```{r}
+options(stringsAsFactors = FALSE)
+
+# =========================
+# INPUT
+# =========================
+file_cellular  <- "cellular_proteomics_clean_v2.csv"
+file_soluble   <- "soluble_proteomics_clean_v2.csv"
+file_insoluble <- "insoluble_proteomics_clean_v2.csv"
+
+# All groups — M03 will be used as the fixed reference
+groups    <- c("D14", "D21", "M03", "M06", "M12", "M18")
+ref_group <- "M03"
+
+fdr_cutoff <- 0.05
+min_reps   <- 2
+top_n      <- 20
+
+# Outputs
+out_gene_level        <- "welchBH_m03ref_gene_level.csv"
+out_summary           <- "welchBH_m03ref_summary.csv"
+out_unique_cellular   <- "welchBH_m03ref_unique_cellular.csv"
+out_unique_soluble    <- "welchBH_m03ref_unique_soluble.csv"
+out_unique_insoluble  <- "welchBH_m03ref_unique_insoluble.csv"
+out_top_sig           <- "welchBH_m03ref_top_significant.csv"
+
+# =========================
+# HELPERS
+# =========================
+id_pref <- c("gene_symbol", "uniprot_id", "protein_groups",
+             "protein_description", "mol_weight_da")
+
+get_qcols <- function(nms) grep("Quantity\\.log2$", nms, value = TRUE)
+
+extract_group <- function(col, groups) {
+  hit <- groups[sapply(groups, function(g) {
+    grepl(paste0("(^|[^A-Za-z0-9])", g, "([^A-Za-z0-9]|$)"), col, perl = TRUE)
+  })]
+  if (length(hit) == 0) return(NA_character_)
+  hit[1]
+}
+
+# =========================
+# MAIN ANALYSIS FUNCTION
+# =========================
+run_m03_reference <- function(df, dataset_name, groups, ref_group,
+                               min_reps = 2, fdr_cutoff = 0.05) {
+  id_cols <- intersect(id_pref, names(df))
+  if (length(id_cols) == 0) {
+    df$row_id <- seq_len(nrow(df))
+    id_cols   <- "row_id"
+  }
+
+  qcols <- get_qcols(names(df))
+  if (length(qcols) == 0) stop("No Quantity.log2 columns found in: ", dataset_name)
+
+  colmap <- data.frame(
+    column_name = qcols,
+    group       = vapply(qcols, extract_group,
+                         FUN.VALUE = character(1), groups = groups),
+    stringsAsFactors = FALSE
+  )
+  colmap <- colmap[!is.na(colmap$group), , drop = FALSE]
+
+  gs <- sort(unique(colmap$group))
+  if (!(ref_group %in% gs)) stop(ref_group, " not found in: ", dataset_name)
+
+  other_groups <- setdiff(gs, ref_group)
+  if (length(other_groups) == 0) stop("No non-reference groups in: ", dataset_name)
+
+  cols_ref <- colmap$column_name[colmap$group == ref_group]
+
+  all_gene <- list()
+  all_sum  <- list()
+
+  for (gb in other_groups) {
+    cols_b <- colmap$column_name[colmap$group == gb]
+
+    n      <- nrow(df)
+    pvals  <- rep(NA_real_, n)
+    stats  <- rep(NA_real_, n)
+    log2fc <- rep(NA_real_, n)
+    n_ref  <- integer(n)
+    n_b    <- integer(n)
+
+    for (i in seq_len(n)) {
+      a <- as.numeric(df[i, cols_ref, drop = TRUE]); a <- a[!is.na(a)]
+      b <- as.numeric(df[i, cols_b,   drop = TRUE]); b <- b[!is.na(b)]
+
+      n_ref[i] <- length(a)
+      n_b[i]   <- length(b)
+
+      if (length(a) < min_reps || length(b) < min_reps) next
+
+      tt <- tryCatch(
+        t.test(b, a, var.equal = FALSE, alternative = "two.sided"),
+        error = function(e) NULL
+      )
+      if (is.null(tt)) next
+
+      pvals[i]  <- tt$p.value
+      stats[i]  <- unname(tt$statistic)
+      log2fc[i] <- mean(b) - mean(a)   # test_group - M03
+    }
+
+    p_adj  <- p.adjust(pvals, method = "BH")
+    is_sig <- !is.na(p_adj) & (p_adj < fdr_cutoff)
+
+    gene_tbl <- cbind(
+      df[, id_cols, drop = FALSE],
+      dataset    = dataset_name,
+      group_ref  = ref_group,
+      group_test = gb,
+      comparison = paste0(gb, "_vs_", ref_group),
+      p_value    = pvals,
+      p_adj      = p_adj,
+      statistic  = stats,
+      log2fc     = log2fc,
+      n_ref      = n_ref,
+      n_test     = n_b,
+      is_significant = is_sig,
+      stringsAsFactors = FALSE
+    )
+    all_gene[[length(all_gene) + 1]] <- gene_tbl
+
+    n_tested <- sum(!is.na(pvals))
+    n_sig    <- sum(is_sig, na.rm = TRUE)
+
+    all_sum[[length(all_sum) + 1]] <- data.frame(
+      dataset    = dataset_name,
+      group_ref  = ref_group,
+      group_test = gb,
+      comparison = paste0(gb, "_vs_", ref_group),
+      n_cols_ref  = length(cols_ref),
+      n_cols_test = length(cols_b),
+      n_rows_total  = nrow(df),
+      n_tested      = n_tested,
+      n_significant = n_sig,
+      pct_significant_of_tested = ifelse(
+        n_tested > 0, round(100 * n_sig / n_tested, 3), NA_real_),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  list(
+    gene    = do.call(rbind, all_gene),
+    summary = do.call(rbind, all_sum)
+  )
+}
+
+pick_gene_id <- function(tbl) {
+  prefs <- c("gene_symbol", "uniprot_id", "protein_groups", "row_id")
+  x <- intersect(prefs, names(tbl))
+  if (length(x) == 0) stop("No gene ID column found.")
+  x[1]
+}
+
+# =========================
+# RUN ALL THREE DATASETS
+# =========================
+cell  <- read.csv(file_cellular,  check.names = FALSE, stringsAsFactors = FALSE)
+sol   <- read.csv(file_soluble,   check.names = FALSE, stringsAsFactors = FALSE)
+insol <- read.csv(file_insoluble, check.names = FALSE, stringsAsFactors = FALSE)
+
+res_cell  <- run_m03_reference(cell,  "cellular",   groups, ref_group, min_reps, fdr_cutoff)
+res_sol   <- run_m03_reference(sol,   "soluble",    groups, ref_group, min_reps, fdr_cutoff)
+res_insol <- run_m03_reference(insol, "insoluble",  groups, ref_group, min_reps, fdr_cutoff)
+
+gene_all <- rbind(res_cell$gene, res_sol$gene, res_insol$gene)
+sum_all  <- rbind(res_cell$summary, res_sol$summary, res_insol$summary)
+
+# =========================
+# NON-OVERLAPPING PROTEINS
+# Significant in one dataset but not the others, per comparison
+# =========================
+gene_id_col <- pick_gene_id(gene_all)
+
+sig <- gene_all[gene_all$is_significant %in% TRUE, , drop = FALSE]
+
+unique_cellular_rows  <- list()
+unique_soluble_rows   <- list()
+unique_insoluble_rows <- list()
+
+datasets <- c("cellular", "soluble", "insoluble")
+comps    <- unique(sig$comparison)
+
+for (cmp in comps) {
+  g <- lapply(datasets, function(ds) {
+    unique(sig[sig$comparison == cmp & sig$dataset == ds, gene_id_col, drop = TRUE])
+  })
+  names(g) <- datasets
+
+  all_others <- function(ds) unique(unlist(g[setdiff(datasets, ds)]))
+
+  # Unique to cellular
+  only_cell <- g$cellular[!(g$cellular %in% all_others("cellular"))]
+  if (length(only_cell) > 0) {
+    rows <- sig[sig$comparison == cmp & sig$dataset == "cellular" &
+                  sig[[gene_id_col]] %in% only_cell, , drop = FALSE]
+    unique_cellular_rows[[length(unique_cellular_rows) + 1]] <- rows
+  }
+
+  # Unique to soluble
+  only_sol <- g$soluble[!(g$soluble %in% all_others("soluble"))]
+  if (length(only_sol) > 0) {
+    rows <- sig[sig$comparison == cmp & sig$dataset == "soluble" &
+                  sig[[gene_id_col]] %in% only_sol, , drop = FALSE]
+    unique_soluble_rows[[length(unique_soluble_rows) + 1]] <- rows
+  }
+
+  # Unique to insoluble
+  only_insol <- g$insoluble[!(g$insoluble %in% all_others("insoluble"))]
+  if (length(only_insol) > 0) {
+    rows <- sig[sig$comparison == cmp & sig$dataset == "insoluble" &
+                  sig[[gene_id_col]] %in% only_insol, , drop = FALSE]
+    unique_insoluble_rows[[length(unique_insoluble_rows) + 1]] <- rows
+  }
+}
+
+unique_cellular_tbl  <- if (length(unique_cellular_rows)  > 0) do.call(rbind, unique_cellular_rows)  else data.frame()
+unique_soluble_tbl   <- if (length(unique_soluble_rows)   > 0) do.call(rbind, unique_soluble_rows)   else data.frame()
+unique_insoluble_tbl <- if (length(unique_insoluble_rows) > 0) do.call(rbind, unique_insoluble_rows) else data.frame()
+
+if (nrow(unique_cellular_tbl)  > 0) unique_cellular_tbl  <- unique_cellular_tbl[order(unique_cellular_tbl$p_adj), ]
+if (nrow(unique_soluble_tbl)   > 0) unique_soluble_tbl   <- unique_soluble_tbl[order(unique_soluble_tbl$p_adj), ]
+if (nrow(unique_insoluble_tbl) > 0) unique_insoluble_tbl <- unique_insoluble_tbl[order(unique_insoluble_tbl$p_adj), ]
+
+# =========================
+# TOP SIGNIFICANT PROTEINS
+# Top N most significant (lowest p_adj) per comparison per dataset
+# =========================
+top_sig_rows <- list()
+
+for (ds in datasets) {
+  sub_ds <- sig[sig$dataset == ds, , drop = FALSE]
+  for (cmp in unique(sub_ds$comparison)) {
+    sub_cmp <- sub_ds[sub_ds$comparison == cmp, , drop = FALSE]
+    sub_cmp <- sub_cmp[order(sub_cmp$p_adj), ]
+    top     <- head(sub_cmp, top_n)
+    top$rank_within_comparison <- seq_len(nrow(top))
+    top_sig_rows[[length(top_sig_rows) + 1]] <- top
+  }
+}
+
+top_sig_tbl <- if (length(top_sig_rows) > 0) do.call(rbind, top_sig_rows) else data.frame()
+
+# =========================
+# WRITE OUTPUTS
+# =========================
+write.csv(gene_all,            out_gene_level,       row.names = FALSE)
+write.csv(sum_all,             out_summary,           row.names = FALSE)
+write.csv(unique_cellular_tbl,  out_unique_cellular,  row.names = FALSE)
+write.csv(unique_soluble_tbl,   out_unique_soluble,   row.names = FALSE)
+write.csv(unique_insoluble_tbl, out_unique_insoluble, row.names = FALSE)
+write.csv(top_sig_tbl,          out_top_sig,          row.names = FALSE)
+
+cat("\nDone. Wrote:\n")
+cat("-", out_gene_level,       "\n")
+cat("-", out_summary,           "\n")
+cat("-", out_unique_cellular,  "\n")
+cat("-", out_unique_soluble,   "\n")
+cat("-", out_unique_insoluble, "\n")
+cat("-", out_top_sig,           "\n")
+
+cat("\n--- Summary (all comparisons vs M03) ---\n")
+print(sum_all)
+
+cat("\n--- Unique to CELLULAR (not in soluble or insoluble) ---\n")
+cat("Total:", nrow(unique_cellular_tbl), "entries\n")
+
+cat("\n--- Unique to SOLUBLE (not in cellular or insoluble) ---\n")
+cat("Total:", nrow(unique_soluble_tbl), "entries\n")
+
+cat("\n--- Unique to INSOLUBLE (not in cellular or soluble) ---\n")
+cat("Total:", nrow(unique_insoluble_tbl), "entries\n")
+
+cat("\n--- Top", top_n, "most significant per comparison ---\n")
+cat("Total rows:", nrow(top_sig_tbl), "\n")
+```

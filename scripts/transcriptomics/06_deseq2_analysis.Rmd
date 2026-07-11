@@ -1,0 +1,196 @@
+---
+title: "deseq2_analysis"
+output: html_notebook
+---
+
+---
+title: "DESeq2_all"
+output: html_document
+date: "2026-02-17"
+---
+
+```{r}
+library(DESeq2)
+library(tidyverse)
+library(apeglm)
+library(biomaRt)
+library(org.Mm.eg.db)
+```
+
+## 1. Import and clean counts
+
+```{r}
+counts_all <- read.csv("all_samples_counts_matrix.csv", row.names = 1)
+
+# Standardise sample name formatting
+colnames(counts_all) <- gsub("^X", "", colnames(counts_all))
+colnames(counts_all) <- gsub("\\.", "-", colnames(counts_all))
+colnames(counts_all) <- gsub("2O", "20", colnames(counts_all))
+
+# Set missing values to zero and round to integers (required by DESeq2)
+counts_all[is.na(counts_all)] <- 0
+counts_all <- round(counts_all)
+counts_all <- as.matrix(counts_all)
+storage.mode(counts_all) <- "integer"
+```
+
+## 2. Build sample metadata
+
+```{r}
+sample_names <- colnames(counts_all)
+
+coldata_all <- data.frame(
+  row.names = sample_names,
+  age = ifelse(grepl("young", sample_names), "young", "old")
+)
+coldata_all$age <- factor(coldata_all$age, levels = c("young", "old"))
+
+# Confirm sample order matches between counts and metadata
+stopifnot(all(colnames(counts_all) == rownames(coldata_all)))
+```
+
+## 3. Filter low-count genes
+
+```{r}
+# Remove genes with fewer than 20 total counts across all samples
+keep_total <- rowSums(counts_all) >= 20
+counts_all <- counts_all[keep_total, ]
+
+# Additional filter: retain genes with >10 counts in at least 3 samples per age group
+young_samples <- rownames(coldata_all)[coldata_all$age == "young"]
+old_samples   <- rownames(coldata_all)[coldata_all$age == "old"]
+
+keep_robust <- (rowSums(counts_all[, young_samples] > 10) >= 3) |
+               (rowSums(counts_all[, old_samples]   > 10) >= 3)
+counts_all <- counts_all[keep_robust, ]
+
+dim(counts_all)
+```
+
+## 4. Build DESeq2 dataset
+
+```{r}
+dds_all <- DESeqDataSetFromMatrix(
+  countData = counts_all,
+  colData   = coldata_all,
+  design    = ~ age
+)
+
+dds_all <- DESeq(dds_all)
+
+res_all <- results(dds_all, contrast = c("age", "old", "young"))
+res_all <- lfcShrink(dds_all, coef = "age_old_vs_young", type = "apeglm")
+
+res_df_all <- as.data.frame(res_all)
+res_df_all <- res_df_all[order(res_df_all$padj), ]
+
+saveRDS(dds_all, "dds_all.rds")
+```
+
+## 5. Annotate gene symbols (BioMart)
+
+```{r}
+mart <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+annotate_symbols <- function(res_df, mart) {
+  ids <- gsub("\\..*", "", rownames(res_df))
+
+  symbol_map <- getBM(
+    attributes = c("ensembl_gene_id", "mgi_symbol"),
+    filters    = "ensembl_gene_id",
+    values     = ids,
+    mart       = mart
+  )
+
+  res_df$ensembl_id <- ids
+  res_df <- merge(res_df, symbol_map, by.x = "ensembl_id", by.y = "ensembl_gene_id", all.x = TRUE)
+
+  # Fall back to Ensembl ID where no symbol is available
+  res_df$mgi_symbol[is.na(res_df$mgi_symbol) | res_df$mgi_symbol == ""] <- res_df$ensembl_id[is.na(res_df$mgi_symbol) | res_df$mgi_symbol == ""]
+
+  res_df <- res_df[order(res_df$padj), ]
+  res_df
+}
+
+res_df_all <- annotate_symbols(res_df_all, mart)
+```
+
+## 6. Classify and export significant genes
+
+```{r}
+sig_genes_all <- subset(res_df_all, padj < 0.05)
+sig_up_old_all   <- subset(sig_genes_all, log2FoldChange > 0)   # upregulated in old
+sig_down_old_all <- subset(sig_genes_all, log2FoldChange < 0)   # upregulated in young
+
+write.csv(res_df_all, "DESeq2_results_all.csv", row.names = FALSE)
+write.csv(sig_genes_all, "DESeq2_sig_genes_all.csv", row.names = FALSE)
+write.csv(sig_up_old_all, "DESeq2_upregulated_in_old_all.csv", row.names = FALSE)
+write.csv(sig_down_old_all, "DESeq2_upregulated_in_young_all.csv", row.names = FALSE)
+```
+
+## 7. Map gene symbols via org.Mm.eg.db (secondary annotation)
+
+```{r}
+deseq_mapped <- res_df_all %>%
+  mutate(gene_symbol = mapIds(org.Mm.eg.db,
+                               keys      = ensembl_id,
+                               column    = "SYMBOL",
+                               keytype   = "ENSEMBL",
+                               multiVals = "first")) %>%
+  filter(!is.na(gene_symbol) & gene_symbol != "")
+
+write_csv(deseq_mapped, "deseq_results_with_symbols.csv")
+message("✔ Wrote deseq_results_with_symbols.csv (", nrow(deseq_mapped), " rows)")
+```
+
+---
+
+## Optional: Protein-coding-only parallel analysis
+
+```{r}
+mart_pc <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+gene_ids <- gsub("\\..*", "", rownames(counts_all))
+
+biotype_map <- getBM(
+  attributes = c("ensembl_gene_id", "gene_biotype"),
+  filters    = "ensembl_gene_id",
+  values     = gene_ids,
+  mart       = mart_pc
+)
+
+protein_coding_ids <- biotype_map$ensembl_gene_id[biotype_map$gene_biotype == "protein_coding"]
+```
+
+```{r}
+counts_pc <- counts_all[gsub("\\..*", "", rownames(counts_all)) %in% protein_coding_ids, ]
+
+dds_pc <- DESeqDataSetFromMatrix(
+  countData = counts_pc,
+  colData   = coldata_all,
+  design    = ~ age
+)
+
+dds_pc <- DESeq(dds_pc)
+
+res_pc <- results(dds_pc, contrast = c("age", "old", "young"))
+res_pc <- lfcShrink(dds_pc, coef = "age_old_vs_young", type = "apeglm")
+
+res_df_pc <- as.data.frame(res_pc)
+res_df_pc <- res_df_pc[order(res_df_pc$padj), ]
+res_df_pc <- annotate_symbols(res_df_pc, mart_pc)
+
+saveRDS(dds_pc, "dds_protein_coding.rds")
+```
+
+```{r}
+sig_genes_pc <- subset(res_df_pc, padj < 0.05)
+sig_up_old_pc   <- subset(sig_genes_pc, log2FoldChange > 0)
+sig_down_old_pc <- subset(sig_genes_pc, log2FoldChange < 0)
+
+write.csv(res_df_pc, "DESeq2_results_protein_coding.csv", row.names = FALSE)
+write.csv(sig_genes_pc, "DESeq2_sig_genes_protein_coding.csv", row.names = FALSE)
+write.csv(sig_up_old_pc, "DESeq2_upregulated_in_old_protein_coding.csv", row.names = FALSE)
+write.csv(sig_down_old_pc, "DESeq2_upregulated_in_young_protein_coding.csv", row.names = FALSE)
+```
+
