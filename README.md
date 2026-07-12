@@ -17,18 +17,18 @@ July 2026
 
 Ovarian ageing is one of the most rapid ageing processes in the mammalian body, driving the progressive decline of reproductive capacity through follicle depletion, endocrine remodelling, and structural changes in ovarian tissue. Yet most existing studies examine molecular mechanisms in isolation, either at a single timepoint or through a single omics layer, leaving the temporal dynamics of ovarian ageing across the full reproductive life course poorly understood.
 
-This project takes an integrative, temporally resolved multi-omics approach to characterise the molecular programmes governing ovarian development and ageing in a murine model. Bulk RNA-seq and temporal proteomics (across three subcellular fractions — cellular, soluble, and insoluble) were generated across six timepoints spanning the full reproductive life course:
+This project takes an integrative, temporally resolved multi-omics approach to characterise the molecular programmes governing ovarian development and ageing in a murine model. Temporal proteomics (across three subcellular fractions — cellular, soluble, and insoluble) were generated across six timepoints spanning the full reproductive life course:
 
-| Timepoint | Stage | RNA-seq |
-|---|---|---|
-| D14 | Pre-pubertal | ✓ |
-| D21 | Pre-pubertal | ✓ |
-| M03 | Sexually mature, actively cycling | ✓ |
-| M06 | Peak reproductive capacity | ✓ |
-| M12 | Onset of reproductive decline | ✓ |
-| M18 | Reproductively aged, largely anovulatory | ✓ |
+| Timepoint | Stage |
+|---|---|
+| D14 | Pre-pubertal |
+| D21 | Pre-pubertal |
+| M03 | Sexually mature, actively cycling |
+| M06 | Peak reproductive capacity |
+| M12 | Onset of reproductive decline |
+| M18 | Reproductively aged, largely anovulatory |
 
-RNA-seq and proteomic datasets were integrated using **MEFISTO/MOFA2**, a temporal multi-omics factor analysis framework, to distinguish transcriptionally driven regulatory programmes from post-transcriptionally regulated ones — building a molecular map of ovarian ageing across the reproductive lifespan.
+Bulk RNA-seq was generated separately for two age groups — **young** (20–22 weeks) and **old** (52 weeks) — to identify differentially expressed genes distinguishing reproductively young from aged ovaries. RNA-seq and proteomic datasets were integrated using **MEFISTO/MOFA2**, a temporal multi-omics factor analysis framework, to distinguish transcriptionally driven regulatory programmes from post-transcriptionally regulated ones — building a molecular map of ovarian ageing across the reproductive lifespan.
 
 ### Key Analyses
 - Differential gene expression (DESeq2) — young vs old, and across all six timepoints
