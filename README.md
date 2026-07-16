@@ -44,11 +44,11 @@ Bulk RNA-seq was generated separately for two age groups — **young** (20–22 
 
 ```
 ├── data/
-│   ├── transcriptomics/                  # RNA-seq counts matrices and processed outputs
+│   ├── transcriptomics/                  # RNA-seq counts matrices and processed outputs (NOT PUBLICALLY AVAILABLE)
 │   ├── proteomics/
-│   │   ├── raw_data/                     # Raw Spectronaut outputs (cellular + soluble fractions)
-│   │   └── cleaned_data/                 # Cleaned/processed proteomics data
-│   └── multi_omics_integrated/           # Combined RNA-protein integration inputs
+│   │   ├── raw_data/                     # Raw Spectronaut outputs (cellular + soluble fractions) (NOT PUBLICALLY AVAILABLE)
+│   │   └── cleaned_data/                 # Cleaned/processed proteomics data (NOT PUBLICALLY AVAILABLE)
+│   └── multi_omics_integrated/           # Combined RNA-protein integration inputs (HDF5 FILES)
 │
 ├── scripts/
 │   ├── transcriptomics/                  # FastQC → trimming → Salmon → tximport → DESeq2 → visualisation
@@ -94,7 +94,7 @@ Exact software versions, HPC module versions, and key analysis parameters (e.g. 
 
 Analyses were run using a combination of King's College London's **CREATE HPC cluster** (transcriptomic pre-processing: FastQC, cutadapt, Salmon) and local R environments (DESeq2, proteomics statistics, MEFISTO/MOFA2 integration, visualisation).
 
-Raw and processed transcriptomic and proteomic data, including raw mass spectrometry outputs and FASTQ sequencing files, are not publicly available, as permission for their release has not been obtained from the data generators. Requests for access to the underlying data should be directed to Dr Thomas Hopkins or Milan Singh, Reproductive Physiology Laboratory, King's College London.
+Raw and processed transcriptomic and proteomic data, including raw mass spectrometry outputs and FASTQ sequencing files, are not publicly available, as permission for their release was not been obtained from the data generators. Requests for access to the underlying data should be directed to Dr Thomas Hopkins and Milan Singh, Reproductive Physiology Laboratory, King's College London.
 
 
 ---
