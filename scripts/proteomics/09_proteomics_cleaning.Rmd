@@ -3,9 +3,12 @@ title: "proteomics_cleaning"
 output: html_notebook
 ---
 
-
 ```{r}
+# Proteomics raw data is not available on this git hub due to not having permission to share. The paths for reading in the data are from the raw data files on my local directory that I have been granted access to. For permission to access thsi data, please refer to my README file.
+
+
 library(tidyverse)
+
 
 prot_path_cellular  <- "proteomics/Singh-Cellular-20713-4-V2/tables/Table-19.txt"
 prot_path_soluble <- "proteomics/Singh-Soluble-20747-7/tables/Table-17.txt"
@@ -117,20 +120,13 @@ clean_proteomics <- function(prot_raw, output_name) {
 # Apply to both datasets
 prot_cellular_clean <- clean_proteomics(prot_raw_cellular, "cellular_proteomics_clean_v2.csv")
 prot_soluble_clean <- clean_proteomics(prot_raw_soluble, "soluble_proteomics_clean_v2.csv")
-```
-
-cleaning the insoluble data
 
 
-```{r}
-# =============================================================================
-# REFORMAT INSOLUBLE FRACTION
-# Converts InsolubleFraction_Astral.xlsx into the same structure as
-# cellular_proteomics_clean_v2.csv and soluble_proteomics_clean_v2.csv
-#
+# REFORMAT INSOLUBLE FRACTION, data was in a excel file instead of txt
+# Converts InsolubleFraction_Astral.xlsx into the same structure as cellular_proteomics_clean_v2.csv and soluble_proteomics_clean_v2.csv
+
 # INPUT:  InsolubleFraction_Astral.xlsx
 # OUTPUT: insoluble_proteomics_clean_v2.csv
-# =============================================================================
 
 options(stringsAsFactors = FALSE)
 
@@ -138,11 +134,11 @@ library(readxl)    # read Excel files
 library(dplyr)     # data manipulation
 library(tidyr)     # reshaping
 
-# =============================================================================
+
 # 1. READ THE INSOLUBLE EXCEL FILE
 # Skip the first row (it contains a merged header "log2 normalized abundance...")
 # The actual column names are on row 2
-# =============================================================================
+
 
 insol_raw <- read_excel(
   "results/tables/InsolubleFraction_Astral.xlsx",
@@ -154,11 +150,11 @@ cat("Raw dimensions:", nrow(insol_raw), "rows x", ncol(insol_raw), "cols\n")
 cat("Column names:\n")
 print(names(insol_raw))
 
-# =============================================================================
+
 # 2. RENAME IDENTIFIER COLUMNS to match cellular/soluble
 # Raw names: PG.ProteinAccessions, Gene Name, PG.ProteinDescriptions, PG.ProteinNames
 # Target:    uniprot_id,            gene_symbol, protein_description,  protein_groups
-# =============================================================================
+
 
 insol <- insol_raw %>%
   rename(
@@ -168,13 +164,11 @@ insol <- insol_raw %>%
     protein_groups      = PG.ProteinNames       # closest equivalent to protein_groups
   )
 
-# =============================================================================
+
 # 3. IDENTIFY SAMPLE COLUMNS AND MAP TO TIMEPOINTS
 # Column name pattern: "[N] PR807_MS2_XC_YYD/M_Astral.htrms.PG.Quantity"
 # Timepoint codes in raw data: 14D, 21D, 3M, 6M, 12M, 18M
 # Target timepoint labels:     D14, D21, M03, M06, M12, M18
-# =============================================================================
-
 # All quantity columns (everything except the 4 identifier columns)
 id_cols      <- c("uniprot_id", "gene_symbol", "protein_description", "protein_groups")
 sample_cols  <- setdiff(names(insol), id_cols)
@@ -207,11 +201,9 @@ if (any(is.na(col_tp_map$timepoint))) {
   warning("Some columns could not be mapped to a timepoint — check col_tp_map")
 }
 
-# =============================================================================
 # 4. RENAME SAMPLE COLUMNS to match cellular/soluble format:
 # e.g. "D14.20713.Quantity.log2"
 # Since insoluble sample IDs differ, we use rep index (1-5) per timepoint
-# =============================================================================
 
 tp_levels <- c("D14", "D21", "M03", "M06", "M12", "M18")
 
@@ -229,10 +221,9 @@ insol      <- insol %>% rename(all_of(rename_vec))
 cat("\nRenamed sample columns:\n")
 print(names(insol))
 
-# =============================================================================
+
 # 5. COMPUTE MEAN LOG2 INTENSITY PER TIMEPOINT
 # Matches columns like mean_log2_D14, mean_log2_M03 etc. in cellular/soluble
-# =============================================================================
 
 get_tp_cols <- function(df, tp) {
   grep(paste0("^", tp, "\\.rep"), names(df), value = TRUE)
@@ -246,11 +237,11 @@ for (tp in tp_levels) {
   }
 }
 
-# =============================================================================
+
 # 6. COMPUTE DETECTION METRICS
 # n_samples_detected : number of samples where the protein was detected (non-NA)
 # pct_samples_detected: percentage of all samples with detection
-# =============================================================================
+
 
 all_sample_cols <- col_tp_map$new_col
 n_total_samples <- length(all_sample_cols)
@@ -260,12 +251,10 @@ insol$pct_samples_detected <- round(
   100 * insol$n_samples_detected / n_total_samples, 2
 )
 
-# =============================================================================
 # 7. ARRANGE COLUMNS IN SAME ORDER AS CELLULAR/SOLUBLE
 # id cols | QC cols | mean_log2 per tp | sample Quantity.log2 cols
 # Note: mol_weight_da, n_precursors_exp, median_precursors_used not available
 #       in the insoluble file — filled with NA for compatibility
-# =============================================================================
 
 # Ordered mean log2 columns
 mean_cols <- paste0("mean_log2_", tp_levels)
@@ -310,10 +299,6 @@ final_col_order <- c(
 final_col_order <- final_col_order[final_col_order %in% names(insol)]
 insol_final     <- insol[, final_col_order]
 
-# =============================================================================
-# 8. SAVE OUTPUT
-# =============================================================================
-
 write.csv(insol_final, "insoluble_proteomics_clean_v2.csv", row.names = FALSE)
 
 cat("\nDone! Output saved to: insoluble_proteomics_clean_v2.csv\n")
@@ -323,17 +308,175 @@ print(names(insol_final))
 ```
 
 
-visualisation and batch correction
+```{r}
+# Implementing Batch Correction via ComBat
+# BATCH CORRECTION (ComBat)
+# Applies empirical Bayes batch correction across the three subcellular
+# fractions, treating fraction/instrument as the batch variable.
+#
+
+
+library(sva)
+library(tidyverse)
+
+# 1. Load the three cleaned datasets
+cellular  <- read.csv("cellular_proteomics_clean_v2.csv")
+soluble   <- read.csv("soluble_proteomics_clean_v2.csv")
+insoluble <- read.csv("insoluble_proteomics_clean_v2.csv")
+
+tp_levels <- c("D14", "D21", "M03", "M06", "M12", "M18")
+mean_cols <- paste0("mean_log2_", tp_levels)
+
+# 2. Identify proteins shared across all three fractions
+shared_genes <- Reduce(intersect, list(
+  cellular$gene_symbol,
+  soluble$gene_symbol,
+  insoluble$gene_symbol
+))
+
+cat("Shared genes across all three fractions:", length(shared_genes), "\n")
+
+# 3. Build a combined expression matrix (mean log2 per timepoint)
+build_shared_matrix <- function(df, prefix, genes) {
+  df %>%
+    filter(gene_symbol %in% genes) %>%
+    distinct(gene_symbol, .keep_all = TRUE) %>%
+    arrange(gene_symbol) %>%
+    select(gene_symbol, all_of(mean_cols)) %>%
+    column_to_rownames("gene_symbol") %>%
+    rename_with(~ paste0(prefix, "_", .x))
+}
+
+mat_cellular  <- build_shared_matrix(cellular,  "Cellular",  shared_genes)
+mat_soluble   <- build_shared_matrix(soluble,   "Soluble",   shared_genes)
+mat_insoluble <- build_shared_matrix(insoluble, "Insoluble", shared_genes)
+
+combined_mat <- cbind(mat_cellular, mat_soluble, mat_insoluble) %>%
+  as.matrix()
+
+# Restrict to complete cases (required by ComBat)
+combined_mat <- combined_mat[complete.cases(combined_mat), ]
+
+cat("Genes retained after complete-case filtering:", nrow(combined_mat), "\n")
+
+# 4. Define batch (acquisition instrument, matching fraction identity) ─
+batch <- c(
+  rep("Exploris480_cellular", ncol(mat_cellular)),
+  rep("Exploris480_soluble",  ncol(mat_soluble)),
+  rep("Astral_insoluble",     ncol(mat_insoluble))
+)
+
+# 5. Run ComBat
+combat_mat <- ComBat(dat = combined_mat, batch = batch)
+
+# 6. Split corrected matrix back into per-fraction data frames
+n_cell <- ncol(mat_cellular)
+n_sol  <- ncol(mat_soluble)
+n_insol <- ncol(mat_insoluble)
+
+cellular_corrected  <- combat_mat[, 1:n_cell] %>%
+  as.data.frame() %>%
+  rownames_to_column("gene_symbol") %>%
+  rename_with(~ str_remove(.x, "^Cellular_"), -gene_symbol)
+
+soluble_corrected   <- combat_mat[, (n_cell + 1):(n_cell + n_sol)] %>%
+  as.data.frame() %>%
+  rownames_to_column("gene_symbol") %>%
+  rename_with(~ str_remove(.x, "^Soluble_"), -gene_symbol)
+
+insoluble_corrected <- combat_mat[, (n_cell + n_sol + 1):(n_cell + n_sol + n_insol)] %>%
+  as.data.frame() %>%
+  rownames_to_column("gene_symbol") %>%
+  rename_with(~ str_remove(.x, "^Insoluble_"), -gene_symbol)
+
+# 7. Export corrected values for the shared protein set
+write.csv(cellular_corrected,  "cellular_shared_proteins_combat_corrected.csv",  row.names = FALSE)
+write.csv(soluble_corrected,   "soluble_shared_proteins_combat_corrected.csv",   row.names = FALSE)
+write.csv(insoluble_corrected, "insoluble_shared_proteins_combat_corrected.csv", row.names = FALSE)
+
+cat("\n✔ ComBat correction complete.\n")
+cat("Corrected values exported for", nrow(combat_mat), "shared proteins per fraction.\n")
+cat("NOTE: fraction-exclusive proteins (not detected in all three fractions)\n")
+cat("      remain uncorrected in the original _clean_v2.csv files, since\n")
+cat("      ComBat cannot estimate batch effects without cross-batch data.\n")
+```
+
 
 ```{r}
+# PLOTTING BATCH CORREECTION PCA AND VISUALISING PROTEIN ABUNDANCES ACROSS FRACTIONS
 library(tidyverse)
+library(sva)        # for ComBat
 library(patchwork)
 
-# ---- Colourblind-safe palette (Okabe-Ito), avoiding red/green pairing ----
+# 0. Load cleaned proteomics data
+
+cellular  <- read.csv("cellular_proteomics_clean_v2.csv")
+soluble   <- read.csv("soluble_proteomics_clean_v2.csv")
+insoluble <- read.csv("insoluble_proteomics_clean_v2.csv")
+
+
+# 1. Total proteins identified per fraction
+
+protein_counts <- tibble(
+  Fraction = c("Cellular", "Soluble", "Insoluble"),
+  Total_Proteins = c(nrow(cellular), nrow(soluble), nrow(insoluble))
+)
+print(protein_counts)
+
+
+# 2. Prep shared proteins across fractions for ComBat demonstration
+
+prep_fraction <- function(df) {
+  df %>%
+    filter(!is.na(gene_symbol)) %>%
+    select(gene_symbol, matches("\\.Quantity\\.log2$")) %>%
+    group_by(gene_symbol) %>%
+    summarise(across(everything(), ~mean(.x, na.rm = TRUE)), .groups = "drop")
+}
+
+cell_mat <- prep_fraction(cellular)
+sol_mat  <- prep_fraction(soluble)
+ins_mat  <- prep_fraction(insoluble)
+
+shared <- cell_mat %>%
+  inner_join(sol_mat, by = "gene_symbol", suffix = c(".cell", ".sol")) %>%
+  inner_join(ins_mat, by = "gene_symbol", suffix = c("", ".ins"))
+
+cat("\nShared proteins across all three fractions:", nrow(shared), "\n")
+
+expr_mat <- shared %>% select(-gene_symbol) %>% as.matrix()
+rownames(expr_mat) <- shared$gene_symbol
+
+expr_mat_complete <- expr_mat[complete.cases(expr_mat), ]
+cat("Complete-case proteins used for PCA/ComBat:", nrow(expr_mat_complete), "\n")
+
+batch <- c(rep("Exploris480_cellular", ncol(cell_mat) - 1),
+           rep("Exploris480_soluble",  ncol(sol_mat) - 1),
+           rep("Astral_insoluble",     ncol(ins_mat) - 1))
+
+
+# 3. PCA before and after ComBat
+
+pca_before <- prcomp(t(expr_mat_complete), scale. = TRUE)
+pca_before_df <- as.data.frame(pca_before$x[, 1:2]) %>%
+  mutate(Batch = batch, Stage = "Before ComBat")
+
+expr_corrected <- ComBat(dat = expr_mat_complete, batch = batch, par.prior = TRUE)
+
+pca_after <- prcomp(t(expr_corrected), scale. = TRUE)
+pca_after_df <- as.data.frame(pca_after$x[, 1:2]) %>%
+  mutate(Batch = batch, Stage = "After ComBat")
+
+pca_combined <- bind_rows(pca_before_df, pca_after_df) %>%
+  mutate(Stage = factor(Stage, levels = c("Before ComBat", "After ComBat")))
+
+# =====================================================================
+# 4. Colours (Okabe-Ito, colourblind-safe)
+# =====================================================================
 fraction_colours <- c(
-  "Cellular"  = "#0072B2",  # blue
-  "Soluble"   = "#E69F00",  # orange
-  "Insoluble" = "#009E73"   # bluish green
+  "Cellular"  = "#0072B2",
+  "Soluble"   = "#E69F00",
+  "Insoluble" = "#009E73"
 )
 
 batch_colours <- c(
@@ -342,7 +485,9 @@ batch_colours <- c(
   "Astral_insoluble"     = "#009E73"
 )
 
-# ---- Panel A: total protein counts per fraction ----
+
+# 5. Panel A: total protein counts per fraction
+
 p_counts <- ggplot(protein_counts, aes(x = Fraction, y = Total_Proteins, fill = Fraction)) +
   geom_col(width = 0.6) +
   geom_text(aes(label = Total_Proteins), vjust = -0.6, size = 4.5, fontface = "bold") +
@@ -351,25 +496,42 @@ p_counts <- ggplot(protein_counts, aes(x = Fraction, y = Total_Proteins, fill = 
        x = "", y = "Number of proteins identified") +
   theme_minimal(base_size = 13) +
   theme(legend.position = "none",
-        plot.title = element_text(face = "bold", hjust = 0.5),
-        axis.title = element_text(size = 16, face = "bold"),  # ← axis title bigger + bold
-        axis.text = element_text(size = 14, face = "bold")) +  # ← axis labels bigger + bold
+        plot.title = element_text(face = "bold", hjust = 0.5)) +
   scale_y_continuous(limits = c(0, max(protein_counts$Total_Proteins) * 1.15))
 
-# ---- Panel B: PCA before/after ComBat ----
-p_combat <- ggplot(pca_combined, aes(x = PC1, y = PC2, colour = Batch)) +
+
+# 6. Panel B: PCA before/after ComBat as two SEPARATE plots
+
+shared_lims <- range(c(pca_combined$PC1, pca_combined$PC2))
+
+p_before <- ggplot(pca_before_df, aes(x = PC1, y = PC2, colour = Batch)) +
   geom_point(size = 2.5, alpha = 0.8) +
-  facet_wrap(~Stage) +
   scale_colour_manual(values = batch_colours) +
-  labs(title = "PCA before and after ComBat batch correction",
-       subtitle = "Shared proteins across cellular, soluble, and insoluble fractions") +
+  coord_equal(xlim = shared_lims, ylim = shared_lims) +
+  labs(title = "Before ComBat", x = "PC1", y = "PC2") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", hjust = 0.5))
+
+p_after <- ggplot(pca_after_df, aes(x = PC1, y = PC2, colour = Batch)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  scale_colour_manual(values = batch_colours) +
+  coord_equal(xlim = shared_lims, ylim = shared_lims) +
+  labs(title = "After ComBat", x = "PC1", y = "PC2") +
   theme_minimal(base_size = 13) +
   theme(legend.position = "bottom",
-        plot.title = element_text(face = "bold", hjust = 0.5),
-        axis.title = element_text(size = 16, face = "bold"),  # ← axis title bigger + bold
-        axis.text = element_text(size = 14, face = "bold"))   # ← axis labels bigger + bold
+        plot.title = element_text(face = "bold", hjust = 0.5))
 
-# ---- Combine into a patchwork figure ----
+p_combat <- (p_before | p_after) +
+  plot_layout(guides = "collect") +
+  plot_annotation(title = "PCA before and after ComBat batch correction",
+                   subtitle = "Shared proteins across cellular, soluble, and insoluble fractions") &
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "bold", hjust = 0.5))
+
+
+# 7. Combine Panel A + Panel B into final figure
+
 final_figure <- (p_counts | p_combat) +
   plot_layout(widths = c(1, 2)) +
   plot_annotation(tag_levels = "A") &
@@ -380,3 +542,5 @@ final_figure
 ggsave("protein_detection_overview_patchwork.pdf", final_figure, width = 14, height = 6)
 ggsave("protein_detection_overview_patchwork.png", final_figure, width = 14, height = 6, dpi = 300, bg = "white")
 ```
+
+

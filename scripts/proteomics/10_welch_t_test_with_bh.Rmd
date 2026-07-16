@@ -3,14 +3,18 @@ title: "10_welch_t_test_with_bh"
 output: html_notebook
 ---
 
- welch with bh
- 
 ```{r}
+# packages
+
+library(tidyverse)
+library(gprofiler2)
+library(patchwork)
+
+# WELCH T-TEST analysis 
 options(stringsAsFactors = FALSE)
 
-# =========================
 # INPUT
-# =========================
+
 file_cellular <- "cellular_proteomics_clean_v2.csv"
 file_soluble  <- "soluble_proteomics_clean_v2.csv"
 file_insoluble <- "insoluble_proteomics_clean_v2.csv"
@@ -26,9 +30,9 @@ out_gene_level <- "welchBH_cellular_soluble_gene_level.csv"
 out_summary <- "welchBH_cellular_soluble_summary.csv"
 out_overlap <- "welchBH_cellular_soluble_overlap.csv"
 
-# =========================
+
 # HELPERS
-# =========================
+
 id_pref <- c("gene_symbol","uniprot_id","protein_groups","protein_description","mol_weight_da")
 
 get_qcols <- function(nms) grep("Quantity\\.log2$", nms, value = TRUE)
@@ -153,9 +157,9 @@ pick_gene_id <- function(tbl) {
   x[1]
 }
 
-# =========================
+
 # RUN ALL DATASETS
-# =========================
+
 cell <- read.csv(file_cellular, check.names = FALSE, stringsAsFactors = FALSE)
 sol  <- read.csv(file_soluble,  check.names = FALSE, stringsAsFactors = FALSE)
 insol <- read.csv(file_insoluble, check.names = FALSE, stringsAsFactors = FALSE)
@@ -167,9 +171,9 @@ res_insol <- run_one_dataset(insol, "insoluble", groups, min_reps, fdr_cutoff)
 gene_all <- rbind(res_cell$gene, res_sol$gene)
 sum_all  <- rbind(res_cell$summary, res_sol$summary)
 
-# =========================
+
 # OVERLAP: significant genes in BOTH datasets for same comparison
-# =========================
+
 gene_id_col <- pick_gene_id(gene_all)
 
 sig <- gene_all[gene_all$is_significant %in% TRUE, , drop = FALSE]
@@ -239,9 +243,7 @@ if (length(overlap_rows) > 0) {
 }
 
 
-# =========================
-# WRITE OUTPUTS
-# =========================
+# outputs
 write.csv(gene_all, out_gene_level, row.names = FALSE)
 write.csv(sum_all, out_summary, row.names = FALSE)
 write.csv(overlap_tbl, out_overlap, row.names = FALSE)
@@ -253,22 +255,8 @@ cat("-", out_overlap, "\n")
 
 cat("\nSummary preview:\n")
 print(sum_all)
-```
 
-
-
-welch pairwise m03-> m18
-
-
-```{r}
-options(stringsAsFactors = FALSE)
-
-# =========================
-# INPUT
-# =========================
-file_cellular  <- "cellular_proteomics_clean_v2.csv"
-file_soluble   <- "soluble_proteomics_clean_v2.csv"
-file_insoluble <- "insoluble_proteomics_clean_v2.csv"
+# M03->M18 ANALYSIS
 
 # All groups — M03 will be used as the fixed reference
 groups    <- c("D14", "D21", "M03", "M06", "M12", "M18")
@@ -286,9 +274,6 @@ out_unique_soluble    <- "welchBH_m03ref_unique_soluble.csv"
 out_unique_insoluble  <- "welchBH_m03ref_unique_insoluble.csv"
 out_top_sig           <- "welchBH_m03ref_top_significant.csv"
 
-# =========================
-# HELPERS
-# =========================
 id_pref <- c("gene_symbol", "uniprot_id", "protein_groups",
              "protein_description", "mol_weight_da")
 
@@ -302,9 +287,9 @@ extract_group <- function(col, groups) {
   hit[1]
 }
 
-# =========================
+
 # MAIN ANALYSIS FUNCTION
-# =========================
+
 run_m03_reference <- function(df, dataset_name, groups, ref_group,
                                min_reps = 2, fdr_cutoff = 0.05) {
   id_cols <- intersect(id_pref, names(df))
@@ -417,9 +402,9 @@ pick_gene_id <- function(tbl) {
   x[1]
 }
 
-# =========================
+
 # RUN ALL THREE DATASETS
-# =========================
+
 cell  <- read.csv(file_cellular,  check.names = FALSE, stringsAsFactors = FALSE)
 sol   <- read.csv(file_soluble,   check.names = FALSE, stringsAsFactors = FALSE)
 insol <- read.csv(file_insoluble, check.names = FALSE, stringsAsFactors = FALSE)
@@ -431,10 +416,10 @@ res_insol <- run_m03_reference(insol, "insoluble",  groups, ref_group, min_reps,
 gene_all <- rbind(res_cell$gene, res_sol$gene, res_insol$gene)
 sum_all  <- rbind(res_cell$summary, res_sol$summary, res_insol$summary)
 
-# =========================
+
 # NON-OVERLAPPING PROTEINS
 # Significant in one dataset but not the others, per comparison
-# =========================
+
 gene_id_col <- pick_gene_id(gene_all)
 
 sig <- gene_all[gene_all$is_significant %in% TRUE, , drop = FALSE]
@@ -487,10 +472,10 @@ if (nrow(unique_cellular_tbl)  > 0) unique_cellular_tbl  <- unique_cellular_tbl[
 if (nrow(unique_soluble_tbl)   > 0) unique_soluble_tbl   <- unique_soluble_tbl[order(unique_soluble_tbl$p_adj), ]
 if (nrow(unique_insoluble_tbl) > 0) unique_insoluble_tbl <- unique_insoluble_tbl[order(unique_insoluble_tbl$p_adj), ]
 
-# =========================
+
 # TOP SIGNIFICANT PROTEINS
 # Top N most significant (lowest p_adj) per comparison per dataset
-# =========================
+
 top_sig_rows <- list()
 
 for (ds in datasets) {
@@ -506,9 +491,8 @@ for (ds in datasets) {
 
 top_sig_tbl <- if (length(top_sig_rows) > 0) do.call(rbind, top_sig_rows) else data.frame()
 
-# =========================
-# WRITE OUTPUTS
-# =========================
+# OUTPUTS
+
 write.csv(gene_all,            out_gene_level,       row.names = FALSE)
 write.csv(sum_all,             out_summary,           row.names = FALSE)
 write.csv(unique_cellular_tbl,  out_unique_cellular,  row.names = FALSE)
@@ -538,4 +522,410 @@ cat("Total:", nrow(unique_insoluble_tbl), "entries\n")
 
 cat("\n--- Top", top_n, "most significant per comparison ---\n")
 cat("Total rows:", nrow(top_sig_tbl), "\n")
+```
+
+
+
+
+```{r}
+
+# TRAJECTORY ANALYSIS AND ENRICHMENT ANALYSIS 
+library(tidyverse)
+library(gprofiler2)
+
+
+# Load Welch t-test results and original proteomics data
+
+welch_cellular  <- read.csv("cellular_welch_results.csv")
+welch_soluble   <- read.csv("soluble_welch_results.csv")
+welch_insoluble <- read.csv("insoluble_welch_results.csv")
+
+cellular  <- read.csv("cellular_proteomics_clean_v2.csv")
+soluble   <- read.csv("soluble_proteomics_clean_v2.csv")
+insoluble <- read.csv("insoluble_proteomics_clean_v2.csv")
+
+timepoint_cols <- c("mean_log2_D14", "mean_log2_D21", "mean_log2_M03",
+                     "mean_log2_M06", "mean_log2_M12", "mean_log2_M18")
+
+
+# 1. Rebuild trajectory clusters for every pairwise comparison, per
+
+
+build_comparison_trajectories <- function(welch_df, proteomics_df, comparison_name,
+                                            fraction_name, seed = 42) {
+
+  sig_genes <- welch_df %>%
+    filter(comparison == comparison_name, is_significant == TRUE) %>%
+    pull(gene_symbol)
+
+  traj <- proteomics_df %>%
+    filter(gene_symbol %in% sig_genes, !is.na(gene_symbol)) %>%
+    distinct(gene_symbol, .keep_all = TRUE) %>%
+    select(gene_symbol, all_of(timepoint_cols)) %>%
+    filter(complete.cases(.))
+
+  if (nrow(traj) < 10) {
+    cat(fraction_name, "-", comparison_name, ": too few complete-trajectory genes (",
+        nrow(traj), "), skipping\n")
+    return(NULL)
+  }
+
+  mat <- traj %>% select(-gene_symbol) %>% as.matrix()
+  rownames(mat) <- traj$gene_symbol
+  mat_z <- t(scale(t(mat)))
+  mat_z <- mat_z[complete.cases(mat_z), ]
+
+  set.seed(seed)
+  km <- kmeans(mat_z, centers = 2, nstart = 25)
+
+  as.data.frame(mat_z) %>%
+    rownames_to_column("gene_symbol") %>%
+    mutate(cluster = factor(km$cluster),
+           comparison = comparison_name,
+           fraction = fraction_name) %>%
+    pivot_longer(cols = all_of(timepoint_cols),
+                 names_to = "Timepoint", values_to = "z_score") %>%
+    mutate(Timepoint = gsub("mean_log2_", "", Timepoint),
+           Timepoint = factor(Timepoint, levels = c("D14","D21","M03","M06","M12","M18")),
+           Timepoint_numeric = as.numeric(Timepoint))
+}
+
+comparisons <- unique(welch_cellular$comparison)
+
+all_trajectories <- bind_rows(
+  map_dfr(comparisons, ~build_comparison_trajectories(welch_cellular, cellular, .x, "Cellular")),
+  map_dfr(comparisons, ~build_comparison_trajectories(welch_soluble, soluble, .x, "Soluble")),
+  map_dfr(comparisons, ~build_comparison_trajectories(welch_insoluble, insoluble, .x, "Insoluble"))
+)
+
+
+# 2. Background per fraction = all genes with a complete trajectory
+
+background_by_fraction <- all_trajectories %>%
+  distinct(fraction, gene_symbol) %>%
+  group_by(fraction) %>%
+  summarise(background = list(unique(gene_symbol)), .groups = "drop")
+
+background_list <- setNames(background_by_fraction$background, background_by_fraction$fraction)
+
+
+# 3. Reusable function: GO:BP enrichment per fraction/comparison/cluster
+
+run_pairwise_cluster_enrichment <- function(fraction_name, comparison_name,
+                                              cluster_id, data, background_list,
+                                              organism = "mmusculus") {
+
+  genes <- data %>%
+    filter(fraction == fraction_name,
+           comparison == comparison_name,
+           cluster == cluster_id) %>%
+    distinct(gene_symbol) %>%
+    pull(gene_symbol)
+
+  if (length(genes) < 5) return(NULL)
+
+  background <- background_list[[fraction_name]]
+
+  res <- gost(
+    query = genes,
+    organism = organism,
+    correction_method = "fdr",
+    sources = "GO:BP",
+    custom_bg = background,
+    evcodes = TRUE
+  )
+
+  if (is.null(res)) return(NULL)
+
+  res$result %>%
+    as_tibble() %>%
+    filter(p_value < 0.05) %>%
+    mutate(
+      fraction = fraction_name,
+      comparison = comparison_name,
+      cluster = cluster_id,
+      n_genes_tested = length(genes)
+    ) %>%
+    select(fraction, comparison, cluster, n_genes_tested,
+           term_name, term_id, p_value, term_size, intersection_size, intersection)
+}
+
+
+# 4. Run across every fraction x comparison x cluster combination
+
+combinations <- all_trajectories %>%
+  distinct(fraction, comparison, cluster)
+
+pairwise_go_results <- pmap_dfr(
+  combinations,
+  ~run_pairwise_cluster_enrichment(..1, ..2, ..3, all_trajectories, background_list)
+)
+
+cat("Total significant GO:BP terms found:", nrow(pairwise_go_results), "\n")
+
+# 5. Save results
+
+flatten_list_cols <- function(df) {
+  df %>% mutate(across(where(is.list), ~map_chr(.x, ~paste(unlist(.x), collapse = ";"))))
+}
+
+write.csv(flatten_list_cols(pairwise_go_results),
+          "pairwise_trajectory_go_enrichment.csv", row.names = FALSE)
+
+top_terms_summary <- pairwise_go_results %>%
+  group_by(fraction, comparison, cluster) %>%
+  slice_min(order_by = p_value, n = 3, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(fraction, comparison, cluster, term_name, p_value, intersection_size)
+
+print(top_terms_summary, n = 50)
+write.csv(top_terms_summary, "pairwise_trajectory_go_top_terms.csv", row.names = FALSE)
+
+# Compute per-gene temporal change magnitude from the RAW (non
+#    z-scored) proteomics data, per fraction — magnitude is lost once
+#    data is z-scored, so this must come from the original files
+
+timepoint_cols <- c("mean_log2_D14", "mean_log2_D21", "mean_log2_M03",
+                     "mean_log2_M06", "mean_log2_M12", "mean_log2_M18")
+
+compute_change_magnitude <- function(proteomics_df) {
+  proteomics_df %>%
+    filter(!is.na(gene_symbol)) %>%
+    distinct(gene_symbol, .keep_all = TRUE) %>%
+    select(gene_symbol, all_of(timepoint_cols)) %>%
+    filter(complete.cases(.)) %>%
+    rowwise() %>%
+    mutate(range_change = max(c_across(all_of(timepoint_cols))) - min(c_across(all_of(timepoint_cols)))) %>%
+    ungroup() %>%
+    select(gene_symbol, range_change)
+}
+
+magnitude_cellular  <- compute_change_magnitude(cellular)
+magnitude_soluble   <- compute_change_magnitude(soluble)
+magnitude_insoluble <- compute_change_magnitude(insoluble)
+
+magnitude_by_fraction <- bind_rows(
+  magnitude_cellular  %>% mutate(fraction = "Cellular"),
+  magnitude_soluble   %>% mutate(fraction = "Soluble"),
+  magnitude_insoluble %>% mutate(fraction = "Insoluble")
+)
+
+
+# 1. Re-score pairwise_go_results by mean magnitude of intersecting
+#    genes, instead of ranking by p-value
+
+pairwise_go_magnitude <- pairwise_go_results %>%
+  mutate(intersection_genes = str_split(intersection, ",")) %>%
+  rowwise() %>%
+  mutate(
+    mean_magnitude = mean(
+      magnitude_by_fraction$range_change[
+        magnitude_by_fraction$gene_symbol %in% intersection_genes &
+        magnitude_by_fraction$fraction == fraction
+      ],
+      na.rm = TRUE
+    )
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(mean_magnitude))
+
+
+# 2. Bespoke dissertation theme
+
+dissertation_theme <- theme_minimal(base_size = 9, base_family = "Carlito") +
+  theme(
+    plot.title       = element_text(family = "Liberation Serif", face = "bold", size = 15, hjust = 0.5, colour = "black"),
+    plot.subtitle    = element_text(size = 10, hjust = 0.5, colour = "grey30"),
+    strip.text       = element_text(family = "Liberation Serif", face = "bold", size = 8, colour = "black"),
+    strip.background = element_rect(fill = "grey90", colour = "grey40", linewidth = 0.4),
+    panel.border     = element_rect(fill = NA, colour = "grey70", linewidth = 0.3),
+    panel.grid.minor = element_blank(),
+    axis.title       = element_text(face = "bold", size = 9, colour = "black"),
+    axis.text        = element_text(size = 6.5, colour = "black"),
+    legend.position  = "bottom"
+  )
+
+cluster_colours <- c("1" = "#0072B2", "2" = "#E69F00")
+
+
+# 3. Prep top 3 terms per comparison/cluster, ranked by MAGNITUDE
+
+prep_fraction_plot_data <- function(fraction_name, results) {
+  results %>%
+    filter(fraction == fraction_name) %>%
+    group_by(comparison, cluster) %>%
+    slice_max(order_by = mean_magnitude, n = 3, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(
+      term_label = str_wrap(term_name, width = 28),
+      cluster = factor(cluster)
+    ) %>%
+    arrange(comparison, cluster, mean_magnitude) %>%
+    group_by(comparison) %>%
+    mutate(term_label = fct_inorder(term_label)) %>%
+    ungroup()
+}
+
+make_fraction_barplot <- function(fraction_name, results) {
+  plot_data <- prep_fraction_plot_data(fraction_name, results)
+
+  if (nrow(plot_data) == 0) {
+    cat(fraction_name, ": no terms to plot\n")
+    return(NULL)
+  }
+
+  ggplot(plot_data, aes(x = term_label, y = mean_magnitude, fill = cluster)) +
+    geom_col(width = 0.7) +
+    coord_flip() +
+    facet_wrap(~comparison, scales = "free_y", ncol = 3) +
+    scale_fill_manual(values = cluster_colours, name = "Cluster") +
+    labs(
+      title = paste0(fraction_name, ": pairwise trajectory GO:BP terms by change magnitude"),
+      subtitle = "Top 3 terms per comparison/cluster, ranked by mean |log2 range| of driver genes (p < 0.05)",
+      x = NULL, y = "Mean temporal change (log2 range)"
+    ) +
+    dissertation_theme
+}
+
+
+# 4. Build and export
+
+p_cellular_go  <- make_fraction_barplot("Cellular",  pairwise_go_magnitude)
+p_soluble_go   <- make_fraction_barplot("Soluble",   pairwise_go_magnitude)
+p_insoluble_go <- make_fraction_barplot("Insoluble", pairwise_go_magnitude)
+
+p_cellular_go
+p_soluble_go
+p_insoluble_go
+
+ggsave("pairwise_trajectory_go_magnitude_cellular.pdf", p_cellular_go,
+       width = 16, height = 20, device = cairo_pdf)
+ggsave("pairwise_trajectory_go_magnitude_soluble.pdf", p_soluble_go,
+       width = 16, height = 20, device = cairo_pdf)
+ggsave("pairwise_trajectory_go_magnitude_insoluble.pdf", p_insoluble_go,
+       width = 16, height = 20, device = cairo_pdf)
+
+```
+
+
+```{r}
+# fixing up some figures
+
+library(tidyverse)
+library(patchwork)
+
+dissertation_theme <- theme_minimal(base_size = 8, base_family = "Carlito") +
+  theme(
+    plot.title       = element_text(family = "Liberation Serif", face = "bold", size = 15, hjust = 0.5, colour = "black"),
+    plot.subtitle    = element_text(size = 9.5, hjust = 0.5, colour = "grey30"),
+    strip.text       = element_text(family = "Liberation Serif", face = "bold", size = 7.5, colour = "black"),
+    strip.background = element_rect(fill = "grey90", colour = "grey40", linewidth = 0.4),
+    panel.border     = element_rect(fill = NA, colour = "grey70", linewidth = 0.3),
+    panel.grid.minor = element_blank(),
+    axis.title       = element_text(face = "bold", size = 8.5, colour = "black"),
+    axis.text        = element_text(size = 10, colour = "black"),
+    legend.position  = "bottom"
+  )
+
+cluster_colours <- c("1" = "#0072B2", "2" = "#E69F00")
+
+
+# 1. TRAJECTORY panel — one per fraction, faceted by comparison + cluster
+
+make_fraction_trajectory_plot <- function(fraction_name, traj_data) {
+  df <- traj_data %>% filter(fraction == fraction_name)
+
+  ggplot(df, aes(x = Timepoint_numeric, y = z_score)) +
+    geom_line(aes(group = gene_symbol), alpha = 0.06, colour = "grey40") +
+    geom_smooth(aes(group = cluster, colour = cluster), method = "loess", se = FALSE,
+                linewidth = 0.9) +
+    facet_wrap(~ comparison + cluster, ncol = 6, labeller = label_wrap_gen(18)) +
+    scale_colour_manual(values = cluster_colours, name = "Cluster") +
+    scale_x_continuous(breaks = 1:6, labels = c("D14","D21","M03","M06","M12","M18")) +
+    labs(title = paste0(fraction_name, ": trajectories"), x = "Timepoint", y = "Scaled expression") +
+    dissertation_theme +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 5.5))
+}
+
+
+# 2. BARPLOT panel — one per fraction, faceted by comparison,
+#    ranked by change magnitude (from previous step)
+
+prep_fraction_plot_data <- function(fraction_name, results) {
+  results %>%
+    filter(fraction == fraction_name) %>%
+    group_by(comparison, cluster) %>%
+    slice_max(order_by = mean_magnitude, n = 3, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(
+      term_label = str_wrap(term_name, width = 26),
+      cluster = factor(cluster)
+    ) %>%
+    arrange(comparison, cluster, mean_magnitude) %>%
+    group_by(comparison) %>%
+    mutate(term_label = fct_inorder(term_label)) %>%
+    ungroup()
+}
+
+make_fraction_go_barplot <- function(fraction_name, results) {
+  plot_data <- prep_fraction_plot_data(fraction_name, results)
+
+  ggplot(plot_data, aes(x = term_label, y = mean_magnitude, fill = cluster)) +
+    geom_col(width = 0.7) +
+    coord_flip() +
+    facet_wrap(~comparison, scales = "free_y", ncol = 6) +
+    scale_fill_manual(values = cluster_colours, name = "Cluster") +
+    labs(title = paste0(fraction_name, ": GO:BP terms by change magnitude"),
+         x = NULL, y = "Mean temporal change (log2 range)") +
+    dissertation_theme
+
+}
+
+
+# 3. Build combined trajectory + barplot figure, ONE per fraction
+#    (trajectory on top, enrichment bars below)
+
+build_combined_fraction_figure <- function(fraction_name, traj_data, go_data) {
+  p_traj <- make_fraction_trajectory_plot(fraction_name, traj_data)
+  p_bars <- make_fraction_go_barplot(fraction_name, go_data)
+
+  combined <- p_traj / p_bars +
+    plot_layout(heights = c(1, 1.4)) +
+    plot_annotation(
+      title = paste0(fraction_name, " fraction: pairwise trajectory clusters and GO:BP enrichment"),
+      subtitle = "Top: loess-smoothed trajectory per comparison/cluster.  Bottom: top 3 GO:BP terms ranked by change magnitude",
+      tag_levels = "A"
+    ) &
+    theme(
+      plot.tag = element_text(family = "Liberation Serif", face = "bold", size = 13, colour = "black"),
+      plot.title = element_text(family = "Liberation Serif", face = "bold", size = 16, hjust = 0.5, colour = "black"),
+      plot.subtitle = element_text(size = 10, hjust = 0.5, colour = "grey30")
+    )
+
+  combined
+}
+
+# 4. Build and export, one combined figure per fraction
+
+final_cellular_combined  <- build_combined_fraction_figure("Cellular",  all_trajectories, pairwise_go_magnitude)
+final_soluble_combined   <- build_combined_fraction_figure("Soluble",   all_trajectories, pairwise_go_magnitude)
+final_insoluble_combined <- build_combined_fraction_figure("Insoluble", all_trajectories, pairwise_go_magnitude)
+
+final_cellular_combined
+final_soluble_combined
+final_insoluble_combined
+
+ggsave("pairwise_combined_cellular.pdf", final_cellular_combined,
+       width = 24, height = 24, device = cairo_pdf)
+ggsave("pairwise_combined_soluble.pdf", final_soluble_combined,
+       width = 24, height = 24, device = cairo_pdf)
+ggsave("pairwise_combined_insoluble.pdf", final_insoluble_combined,
+       width = 24, height = 24, device = cairo_pdf)
+
+ggsave("pairwise_combined_cellular.png", final_cellular_combined,
+       width = 24, height = 24, dpi = 300, bg = "white")
+ggsave("pairwise_combined_soluble.png", final_soluble_combined,
+       width = 24, height = 24, dpi = 300, bg = "white")
+ggsave("pairwise_combined_insoluble.png", final_insoluble_combined,
+       width = 24, height = 24, dpi = 300, bg = "white")
 ```

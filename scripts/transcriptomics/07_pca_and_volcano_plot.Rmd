@@ -3,16 +3,15 @@ title: "PCA and volcano plot"
 output: html_notebook
 ---
 
-1. PCA and volcano plot
-
 ```{r}
+# PCA and volcano plot
 library(DESeq2)
 library(ggplot2)
 library(EnhancedVolcano)
 library(tidyverse)
 library(patchwork)
 
-# ── Shared theme ──────────────────────────────────────────────────────
+# shared theme for figures
 base_theme <- theme_bw() +
   theme(
     panel.grid.major = element_line(colour = "grey90"),
@@ -26,8 +25,8 @@ base_theme <- theme_bw() +
     plot.tag         = element_text(size = 15, face = "bold")
   )
 
-# ── Panel A: PCA ──────────────────────────────────────────────────────
-dds_all <- readRDS("data/transcriptomics/dds_all.rds")
+# Panel A: PCA
+dds_all <- readRDS("dds_all.rds")
 rld     <- rlog(dds_all, blind = TRUE)
 
 pcaData    <- plotPCA(rld, intgroup = "age", returnData = TRUE)
@@ -53,8 +52,8 @@ pca_plot <- ggplot(pcaData, aes(x = PC1, y = PC2, colour = age, label = clean_la
   base_theme +
   theme(aspect.ratio = 1)
 
-# ── Panel B: Volcano ──────────────────────────────────────────────────
-df <- read.csv("data/transcriptomics/deseq_results_with_symbols.csv") %>%
+# Panel B: Volcano
+df <- read.csv("deseq_results_with_symbols.csv") %>%
   filter(!is.na(padj), !is.na(gene_symbol), gene_symbol != "")
 
 DEG_annotOrdered <- df %>% arrange(padj)
@@ -98,11 +97,12 @@ volcano_plot <- EnhancedVolcano(
   labs(tag = "B") +
   base_theme
 
-# ── Combine and save ──────────────────────────────────────────────────
 combined <- pca_plot + volcano_plot + plot_layout(ncol = 2, widths = c(1, 1))
 
 ggsave("deseq_pca_volcano.pdf", plot = combined, width = 30, height = 14, units = "cm")
 message("✔ Saved deseq_pca_volcano.pdf")
 ```
-```
+
+
+
 

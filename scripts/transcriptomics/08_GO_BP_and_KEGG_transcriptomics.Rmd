@@ -4,6 +4,8 @@ output: html_notebook
 ---
 
 ```{r}
+# install packages
+
 library(clusterProfiler)
 library(org.Mm.eg.db)
 library(tidyverse)
@@ -11,7 +13,7 @@ library(enrichplot)
 library(patchwork)
 
 
-# ---- Separate into up- and down-regulated in Old ----
+# Separate into up- and down-regulated in Old
 # Genes higher in OLD ovaries (negative log2FoldChange)
 upregulated_old <- deseq_results %>%
   filter(padj < 0.05, log2FoldChange < -1)
@@ -23,7 +25,7 @@ upregulated_young <- deseq_results %>%
 cat("Upregulated in Old:", nrow(upregulated_old), "genes\n")
 cat("Upregulated in Young:", nrow(upregulated_young), "genes\n")
 
-# ---- Convert Ensembl IDs to Entrez IDs ----
+#Convert Ensembl IDs to Entrez IDs
 entrez_up <- mapIds(org.Mm.eg.db,
                      keys = upregulated_old$ensembl_gene_id,
                      column = "ENTREZID",
@@ -38,7 +40,7 @@ entrez_down <- mapIds(org.Mm.eg.db,
                        multiVals = "first")
 entrez_down <- entrez_down[!is.na(entrez_down)]
 
-# ---- GO enrichment (Biological Process) ----
+# GO enrichment (Biological Process) 
 go_up <- enrichGO(gene = entrez_up,
                    OrgDb = org.Mm.eg.db,
                    ont = "BP",
@@ -53,7 +55,7 @@ go_down <- enrichGO(gene = entrez_down,
                      qvalueCutoff = 0.05,
                      readable = TRUE)
 
-# ---- KEGG pathway enrichment ----
+#  KEGG pathway enrichment
 kegg_up <- enrichKEGG(gene = entrez_up,
                        organism = "mmu",
                        pvalueCutoff = 0.05,
@@ -66,7 +68,7 @@ kegg_down <- enrichKEGG(gene = entrez_down,
                          qvalueCutoff = 0.05)
 kegg_down <- setReadable(kegg_down, OrgDb = org.Mm.eg.db, keyType = "ENTREZID")
 
-# ---- Shared theme so GO and KEGG panels match exactly ----
+# Shared theme so GO and KEGG panels match exactly
 theme_compare <- theme_minimal(base_size = 14) +
   theme(
     legend.title     = element_text(face = "bold", size = 13),
@@ -79,7 +81,7 @@ theme_compare <- theme_minimal(base_size = 14) +
 direction_colours <- c("Increased in Old" = "#D73027",
                         "Decreased in Old (Higher in Young)" = "#4575B4")
 
-# ---- Helper to build a comparison data frame from a pair of enrichResults ----
+# Helper to build a comparison data frame from a pair of enrichResults
 build_comparison <- function(res_up, res_down, n = 10, wrap_width = 50) {
   if (nrow(res_up@result) == 0 | nrow(res_down@result) == 0) {
     warning("One of the enrichment results has no significant terms; skipping this comparison.")
@@ -104,7 +106,7 @@ build_comparison <- function(res_up, res_down, n = 10, wrap_width = 50) {
   combined
 }
 
-# ---- GO comparison barplot ----
+# GO comparison barplot
 go_combined <- build_comparison(go_up, go_down)
 go_combined$Description <- gsub(
   "adaptive immune response based on somatic\nrecombination of immune receptors built from\nimmunoglobulin superfamily domains",
@@ -119,7 +121,7 @@ p_go <- ggplot(go_combined, aes(x = reorder(Description, neglog10p), y = neglog1
   labs(x = "", y = "-log10(adjusted p-value)", title = "GO Biological Process") +
   theme_compare
 
-# ---- KEGG comparison barplot ----
+# KEGG comparison barplot 
 kegg_combined <- build_comparison(kegg_up, kegg_down)
 
 p_kegg <- ggplot(kegg_combined, aes(x = reorder(Description, neglog10p), y = neglog10p, fill = Direction)) +
@@ -129,7 +131,7 @@ p_kegg <- ggplot(kegg_combined, aes(x = reorder(Description, neglog10p), y = neg
   labs(x = "", y = "-log10(adjusted p-value)", title = "KEGG Pathway") +
   theme_compare
 
-# ---- Combine into one patchwork figure with a single shared legend ----
+# Combine into one patchwork figure with a single shared legend 
 final_figure <- (p_go / p_kegg) +
   plot_layout(guides = "collect") +
   plot_annotation(

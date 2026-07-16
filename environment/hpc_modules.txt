@@ -1,0 +1,17 @@
+# HPC modules used on CREATE (King's College London HPC)
+# Confirmed from job logs and output file metadata
+
+fastqc       - v0.12.1   (confirmed from fastqc_data.txt header inside FastQC .zip output)
+py-cutadapt  - v4.4      (Python 3.11.6) (confirmed from cutadapt_trim_*.log)
+salmon       - v1.10.2   (confirmed from Salmon_transcripts_index_v2/versionInfo.json)
+
+# Trimming parameters (from cutadapt log):
+#   Adapters: AGATCGGAAGAGCACACGTCTGAACTCCAGTCA (R1) / AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT (R2)
+#   Quality trimming: -q 20,20
+#   Minimum length: -m 30
+
+# Salmon index (from versionInfo.json / info.json):
+#   Reference: Ensembl mouse, GRCm39, release 109
+#   k-mer size: 31
+#   Decoy-aware: No
+#   keepDuplicates: No (695 duplicate transcripts removed)

@@ -3,11 +3,6 @@ title: "deseq2_analysis"
 output: html_notebook
 ---
 
----
-title: "DESeq2_all"
-output: html_document
-date: "2026-02-17"
----
 
 ```{r}
 library(DESeq2)
@@ -17,9 +12,9 @@ library(biomaRt)
 library(org.Mm.eg.db)
 ```
 
-## 1. Import and clean counts
-
 ```{r}
+# Import and clean counts
+
 counts_all <- read.csv("all_samples_counts_matrix.csv", row.names = 1)
 
 # Standardise sample name formatting
@@ -34,9 +29,8 @@ counts_all <- as.matrix(counts_all)
 storage.mode(counts_all) <- "integer"
 ```
 
-## 2. Build sample metadata
-
 ```{r}
+#  Build sample metadata
 sample_names <- colnames(counts_all)
 
 coldata_all <- data.frame(
@@ -49,9 +43,8 @@ coldata_all$age <- factor(coldata_all$age, levels = c("young", "old"))
 stopifnot(all(colnames(counts_all) == rownames(coldata_all)))
 ```
 
-## 3. Filter low-count genes
-
 ```{r}
+##Filter low-count genes
 # Remove genes with fewer than 20 total counts across all samples
 keep_total <- rowSums(counts_all) >= 20
 counts_all <- counts_all[keep_total, ]
@@ -67,9 +60,8 @@ counts_all <- counts_all[keep_robust, ]
 dim(counts_all)
 ```
 
-## 4. Build DESeq2 dataset
-
 ```{r}
+## Build DESeq2 dataset
 dds_all <- DESeqDataSetFromMatrix(
   countData = counts_all,
   colData   = coldata_all,
@@ -87,9 +79,8 @@ res_df_all <- res_df_all[order(res_df_all$padj), ]
 saveRDS(dds_all, "dds_all.rds")
 ```
 
-## 5. Annotate gene symbols (BioMart)
-
 ```{r}
+# Annotate gene symbols (BioMart)
 mart <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
 
 annotate_symbols <- function(res_df, mart) {
@@ -115,9 +106,8 @@ annotate_symbols <- function(res_df, mart) {
 res_df_all <- annotate_symbols(res_df_all, mart)
 ```
 
-## 6. Classify and export significant genes
-
 ```{r}
+# Classify and export significant genes
 sig_genes_all <- subset(res_df_all, padj < 0.05)
 sig_up_old_all   <- subset(sig_genes_all, log2FoldChange > 0)   # upregulated in old
 sig_down_old_all <- subset(sig_genes_all, log2FoldChange < 0)   # upregulated in young
@@ -128,9 +118,9 @@ write.csv(sig_up_old_all, "DESeq2_upregulated_in_old_all.csv", row.names = FALSE
 write.csv(sig_down_old_all, "DESeq2_upregulated_in_young_all.csv", row.names = FALSE)
 ```
 
-## 7. Map gene symbols via org.Mm.eg.db (secondary annotation)
-
 ```{r}
+## Map gene symbols via org.Mm.eg.db (secondary annotation)
+
 deseq_mapped <- res_df_all %>%
   mutate(gene_symbol = mapIds(org.Mm.eg.db,
                                keys      = ensembl_id,
@@ -142,8 +132,6 @@ deseq_mapped <- res_df_all %>%
 write_csv(deseq_mapped, "deseq_results_with_symbols.csv")
 message("✔ Wrote deseq_results_with_symbols.csv (", nrow(deseq_mapped), " rows)")
 ```
-
----
 
 ## Optional: Protein-coding-only parallel analysis
 
@@ -160,9 +148,7 @@ biotype_map <- getBM(
 )
 
 protein_coding_ids <- biotype_map$ensembl_gene_id[biotype_map$gene_biotype == "protein_coding"]
-```
 
-```{r}
 counts_pc <- counts_all[gsub("\\..*", "", rownames(counts_all)) %in% protein_coding_ids, ]
 
 dds_pc <- DESeqDataSetFromMatrix(
@@ -181,9 +167,7 @@ res_df_pc <- res_df_pc[order(res_df_pc$padj), ]
 res_df_pc <- annotate_symbols(res_df_pc, mart_pc)
 
 saveRDS(dds_pc, "dds_protein_coding.rds")
-```
 
-```{r}
 sig_genes_pc <- subset(res_df_pc, padj < 0.05)
 sig_up_old_pc   <- subset(sig_genes_pc, log2FoldChange > 0)
 sig_down_old_pc <- subset(sig_genes_pc, log2FoldChange < 0)

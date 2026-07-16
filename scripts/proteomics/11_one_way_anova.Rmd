@@ -3,16 +3,17 @@ title: "anova_stats"
 output: html_notebook
 ---
 
-
-one-way anova statistical analysis
-
 ```{r}
+
+# 1. ONE-WAY ANOVA — FULL SIX-TIMEPOINT MODEL (D14-M18)
+
 library(dplyr)
 library(tidyr)
 library(tibble)
 
-cellular <- read.csv("cellular_proteomics_clean_v2.csv")
-soluble  <- read.csv("soluble_proteomics_clean_v2.csv")
+cellular  <- read.csv("cellular_proteomics_clean_v2.csv")
+soluble   <- read.csv("soluble_proteomics_clean_v2.csv")
+insoluble <- read.csv("insoluble_proteomics_clean_v2.csv")
 
 out_dir <- "holistic_proteomics"
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
@@ -21,7 +22,6 @@ get_sample_cols <- function(df) grep("Quantity\\.log2$", colnames(df), value = T
 get_timepoint   <- function(col) sub("\\..*$", "", col)
 
 run_anova <- function(df, fraction_name) {
-
   sample_cols <- get_sample_cols(df)
   timepoints  <- factor(get_timepoint(sample_cols),
                         levels = c("D14","D21","M03","M06","M12","M18"))
@@ -42,8 +42,8 @@ run_anova <- function(df, fraction_name) {
     fit <- tryCatch(aov(x ~ timepoints), error = function(e) NULL)
     if (is.null(fit)) return(c(f_stat = NA, p_value = NA))
     s <- summary(fit)[[1]]
-    c(f_stat   = s["timepoints", "F value"],
-      p_value  = s["timepoints", "Pr(>F)"])
+    c(f_stat  = s["timepoints", "F value"],
+      p_value = s["timepoints", "Pr(>F)"])
   })
 
   result_df <- as.data.frame(t(anova_results)) %>%
@@ -66,28 +66,256 @@ run_anova <- function(df, fraction_name) {
   result_df
 }
 
-cellular_anova <- run_anova(cellular, "cellular")
-soluble_anova  <- run_anova(soluble,  "soluble")
+cellular_anova  <- run_anova(cellular,  "cellular")
+soluble_anova   <- run_anova(soluble,   "soluble")
+insoluble_anova <- run_anova(insoluble, "insoluble")
 
-combined <- bind_rows(cellular_anova, soluble_anova)
+combined <- bind_rows(cellular_anova, soluble_anova, insoluble_anova)
 write.csv(combined, file.path(out_dir, "combined_anova_results.csv"), row.names = FALSE)
-```
-
-heatmap
 
 
+# 2. ONE-WAY ANOVA — M03-ONWARDS MODEL (M03, M06, M12, M18)
 
-trajectory plots and clusters
+cellular  <- read.csv("cellular_proteomics_clean_v2.csv")
+soluble   <- read.csv("soluble_proteomics_clean_v2.csv")
+insoluble <- read.csv("insoluble_proteomics_clean_v2.csv")
 
-```{r}
-install.packages("factoextra")
+tp_levels_m3 <- c("M03", "M06", "M12", "M18")
+
+impute_rowmeans <- function(m) {
+  t(apply(m, 1, function(x) { x[is.na(x)] <- mean(x, na.rm = TRUE); x }))
+}
+
+run_anova <- function(df, fraction_name, tp_keep, suffix = "") {
+  sample_cols <- get_sample_cols(df)
+  tp_char_all <- get_timepoint(sample_cols)
+
+  keep_cols  <- sample_cols[tp_char_all %in% tp_keep]
+  tp_char    <- tp_char_all[tp_char_all %in% tp_keep]
+  timepoints <- factor(tp_char, levels = tp_keep)
+
+  mat <- as.matrix(df[, keep_cols])
+  rownames(mat) <- df$gene_symbol
+  mat[mat == 0] <- NA
+  keep <- rowSums(!is.na(mat)) >= 3
+  mat  <- mat[keep, ]
+
+  mat_filled <- impute_rowmeans(mat)
+
+  anova_results <- apply(mat_filled, 1, function(x) {
+    fit <- tryCatch(aov(x ~ timepoints), error = function(e) NULL)
+    if (is.null(fit)) return(c(f_stat = NA, p_value = NA))
+    s <- summary(fit)[[1]]
+    c(f_stat  = s["timepoints", "F value"],
+      p_value = s["timepoints", "Pr(>F)"])
+  })
+
+  result_df <- as.data.frame(t(anova_results)) %>%
+    rownames_to_column("gene_symbol") %>%
+    mutate(
+      padj           = p.adjust(p_value, method = "BH"),
+      is_significant = !is.na(padj) & padj < 0.05,
+      fraction       = fraction_name
+    ) %>%
+    dplyr::arrange(padj)
+
+  result_df
+}
+
+cellular_anova_m3  <- run_anova(cellular,  "Cellular",  tp_levels_m3, suffix = "m3")
+soluble_anova_m3   <- run_anova(soluble,   "Soluble",   tp_levels_m3, suffix = "m3")
+insoluble_anova_m3 <- run_anova(insoluble, "Insoluble", tp_levels_m3, suffix = "m3")
+
+
+
+# 3. TOP-100 CROSS-FRACTION OVERLAP HEATMAP
+
+library(pheatmap)
+library(grid)
+library(gridExtra)
+library(readxl)
+
+out_dir      <- "holistic_proteomics"
+tp_levels    <- c("D14", "D21", "M03", "M06", "M12", "M18")
+tp_levels_m3 <- c("M03", "M06", "M12", "M18")
+
+cellular <- read.csv("cellular_proteomics_clean_v2.csv")
+soluble  <- read.csv("soluble_proteomics_clean_v2.csv")
+
+preprocess_insoluble <- function(filepath) {
+  df <- read_excel(filepath, skip = 1)
+  df <- dplyr::rename(df, gene_symbol = `Gene Name`)
+  tp_map <- c("14D" = "D14", "21D" = "D21", "3M" = "M03",
+               "6M"  = "M06", "12M" = "M12", "18M" = "M18")
+  sample_cols <- grep("\\.PG\\.Quantity$", colnames(df), value = TRUE)
+  new_names <- vapply(sample_cols, function(col) {
+    tp_raw  <- regmatches(col, regexpr("\\d+[DM](?=_)", col, perl = TRUE))
+    rep_num <- regmatches(col, regexpr("(?<=_)\\d+(?=C_)", col, perl = TRUE))
+    paste0(tp_map[tp_raw], ".rep", rep_num, ".Quantity.log2")
+  }, character(1))
+  colnames(df)[match(sample_cols, colnames(df))] <- new_names
+  df[new_names] <- lapply(df[new_names], as.numeric)
+  as.data.frame(df)
+}
+
+insoluble <- preprocess_insoluble("InsolubleFraction_Astral.xlsx")
+
+cell_anova  <- read.csv(file.path(out_dir, "cellular_anova_results.csv"))
+sol_anova   <- read.csv(file.path(out_dir, "soluble_anova_results.csv"))
+insol_anova <- read.csv(file.path(out_dir, "insoluble_anova_results.csv"))
+
+cell_anova_m3  <- read.csv(file.path(out_dir, "cellular_m3_anova_results.csv"))
+sol_anova_m3   <- read.csv(file.path(out_dir, "soluble_m3_anova_results.csv"))
+insol_anova_m3 <- read.csv(file.path(out_dir, "insoluble_m3_anova_results.csv"))
+
+get_top_overlap <- function(anova_cell, anova_sol, anova_insol, n = 100) {
+  sig_cell  <- anova_cell  %>% filter(is_significant) %>% mutate(rank_cell  = row_number())
+  sig_sol   <- anova_sol   %>% filter(is_significant) %>% mutate(rank_sol   = row_number())
+  sig_insol <- anova_insol %>% filter(is_significant) %>% mutate(rank_insol = row_number())
+
+  inner_join(sig_cell  %>% select(gene_symbol, rank_cell),
+             sig_sol   %>% select(gene_symbol, rank_sol),   by = "gene_symbol") %>%
+    inner_join(sig_insol %>% select(gene_symbol, rank_insol), by = "gene_symbol") %>%
+    mutate(mean_rank = (rank_cell + rank_sol + rank_insol) / 3) %>%
+    arrange(mean_rank) %>%
+    slice(1:n)
+}
+
+overlap_genes    <- get_top_overlap(cell_anova,    sol_anova,    insol_anova)
+overlap_genes_m3 <- get_top_overlap(cell_anova_m3, sol_anova_m3, insol_anova_m3)
+
+write.csv(overlap_genes,    file.path(out_dir, "overlap_top100_genes.csv"),    row.names = FALSE)
+write.csv(overlap_genes_m3, file.path(out_dir, "overlap_top100_genes_m3.csv"), row.names = FALSE)
+
+build_expr_mat <- function(df, fraction_prefix, tp_keep) {
+  sample_cols <- get_sample_cols(df)
+  tp_char_all <- get_timepoint(sample_cols)
+  keep_cols   <- sample_cols[tp_char_all %in% tp_keep]
+  tp_char     <- tp_char_all[tp_char_all %in% tp_keep]
+
+  mat <- as.matrix(df[, keep_cols])
+  rownames(mat) <- df$gene_symbol
+  mat[mat == 0] <- NA
+  mat <- impute_rowmeans(mat)
+
+  rep_idx    <- ave(tp_char, tp_char, FUN = function(x) seq_along(x))
+  clean_cols <- paste0(fraction_prefix, "_", tp_char, "_rep", rep_idx)
+  colnames(mat) <- clean_cols
+
+  col_order <- order(match(tp_char, tp_keep))
+  mat <- mat[, col_order]
+  annot <- data.frame(
+    Timepoint = factor(tp_char[col_order], levels = tp_keep),
+    row.names = clean_cols[col_order]
+  )
+  list(mat = mat, annot = annot)
+}
+
+cell_obj     <- build_expr_mat(cellular,  "C", tp_levels)
+sol_obj      <- build_expr_mat(soluble,   "S", tp_levels)
+insol_obj    <- build_expr_mat(insoluble, "I", tp_levels)
+
+cell_obj_m3  <- build_expr_mat(cellular,  "C", tp_levels_m3)
+sol_obj_m3   <- build_expr_mat(soluble,   "S", tp_levels_m3)
+insol_obj_m3 <- build_expr_mat(insoluble, "I", tp_levels_m3)
+
+ann_colors <- list(
+  Timepoint = c(D14 = "#2166ac", D21 = "#74add1", M03 = "#abd9e9",
+                M06 = "#fdae61", M12 = "#d73027", M18 = "#a50026"),
+  Fraction  = c(Cellular = "#1b7837", Soluble = "#762a83", Insoluble = "#e08214")
+)
+
+ann_colors_m3 <- list(
+  Timepoint = c(M03 = "#abd9e9", M06 = "#fdae61", M12 = "#d73027", M18 = "#a50026"),
+  Fraction  = c(Cellular = "#1b7837", Soluble = "#762a83", Insoluble = "#e08214")
+)
+
+make_overlap_heatmap <- function(expr_cell, expr_sol, expr_insol,
+                                  genes, ann_col_colors, filename) {
+  prep_mat <- function(obj, genes, fraction_label) {
+    g <- intersect(genes, rownames(obj$mat))
+    m <- obj$mat[g, , drop = FALSE]
+    m <- m[apply(m, 1, var, na.rm = TRUE) > 0, , drop = FALSE]
+    annot <- obj$annot[colnames(m), , drop = FALSE]
+    annot$Fraction <- fraction_label
+    list(mat = m, annot = annot)
+  }
+
+  pc <- prep_mat(expr_cell,  genes, "Cellular")
+  ps <- prep_mat(expr_sol,   genes, "Soluble")
+  pi <- prep_mat(expr_insol, genes, "Insoluble")
+
+  common_genes <- Reduce(intersect, list(rownames(pc$mat), rownames(ps$mat), rownames(pi$mat)))
+  if (length(common_genes) == 0) {
+    message("No common genes across all three fractions.")
+    return(invisible(NULL))
+  }
+
+  scale_mat <- function(m) t(scale(t(m[common_genes, ])))
+  combined_mat <- cbind(scale_mat(pc$mat), scale_mat(ps$mat), scale_mat(pi$mat))
+
+  combined_annot <- rbind(pc$annot, ps$annot, pi$annot)[colnames(combined_mat), ]
+  combined_annot$Fraction <- factor(combined_annot$Fraction,
+                                     levels = c("Cellular", "Soluble", "Insoluble"))
+
+  n_genes      <- length(common_genes)
+  row_fontsize <- dplyr::case_when(
+    n_genes <= 50  ~ 11,
+    n_genes <= 100 ~ 9,
+    n_genes <= 150 ~ 7,
+    TRUE           ~ 5
+  )
+
+  gaps <- c(ncol(pc$mat), ncol(pc$mat) + ncol(ps$mat))
+
+  ph <- pheatmap(
+    combined_mat, scale = "none", cluster_rows = TRUE, cluster_cols = FALSE,
+    annotation_col = combined_annot, annotation_colors = ann_col_colors,
+    gaps_col = gaps, show_rownames = TRUE, show_colnames = FALSE,
+    fontsize_row = row_fontsize, silent = TRUE, filename = NA
+  )
+
+  png(file.path(out_dir, filename), width = 14, height = 14, units = "in", res = 150)
+  g <- ph$gtable
+  row_name_idx <- which(g$layout$name == "row_names")
+  if (length(row_name_idx) > 0) {
+    g$grobs[[row_name_idx]]$gp <- gpar(fontface = "bold", fontsize = row_fontsize)
+  } else {
+    for (i in seq_along(g$grobs)) {
+      if (inherits(g$grobs[[i]], "text")) {
+        g$grobs[[i]]$gp$fontface <- "bold"
+        g$grobs[[i]]$gp$fontsize <- row_fontsize
+      }
+    }
+  }
+  grid.draw(g)
+  dev.off()
+  message("Saved: ", filename)
+}
+
+make_overlap_heatmap(cell_obj, sol_obj, insol_obj, genes = overlap_genes$gene_symbol,
+                      ann_col_colors = ann_colors, filename = "overlap_top100_combined_heatmap.png")
+
+make_overlap_heatmap(cell_obj_m3, sol_obj_m3, insol_obj_m3, genes = overlap_genes_m3$gene_symbol,
+                      ann_col_colors = ann_colors_m3, filename = "overlap_top100_m3_combined_heatmap.png")
+
+
+
+# 4. TRAJECTORY CLUSTERING + GO:BP/KEGG ENRICHMENT 
+
+
 library(tidyverse)
-library(cluster)     # silhouette
-library(factoextra)  # fviz_nbclust, silhouette convenience
+library(cluster)
+library(factoextra)
+library(rrvgo)
+library(GO.db)
+library(org.Mm.eg.db)
+library(gprofiler2)
+library(patchwork)
 
-# =====================================================================
-# 0. Load ANOVA results + original proteomics data (for timepoint values)
-# =====================================================================
+select <- dplyr::select
+filter <- dplyr::filter
+
 anova_cellular  <- read.csv("holistic_proteomics/cellular_anova_results.csv")
 anova_soluble   <- read.csv("holistic_proteomics/soluble_anova_results.csv")
 anova_insoluble <- read.csv("holistic_proteomics/insoluble_anova_results.csv")
@@ -100,26 +328,39 @@ timepoint_cols <- c("mean_log2_D14", "mean_log2_D21", "mean_log2_M03",
                      "mean_log2_M06", "mean_log2_M12", "mean_log2_M18")
 
 fraction_colours <- c("Cellular" = "#0072B2", "Soluble" = "#E69F00", "Insoluble" = "#009E73")
+cluster_palette  <- c("#0072B2", "#E69F00", "#009E73", "#D55E00",
+                       "#CC79A7", "#F0E442", "#56B4E9", "#999999")
 
-# =====================================================================
-# 1. Build significant-gene trajectory matrices, z-scored row-wise
-# =====================================================================
+dissertation_theme <- theme_minimal(base_size = 11, base_family = "Carlito") +
+  theme(
+    plot.title       = element_text(family = "Liberation Serif", face = "bold", size = 14, hjust = 0.5, colour = "black"),
+    plot.subtitle    = element_text(family = "Carlito", size = 9.5, hjust = 0.5, colour = "grey30"),
+    strip.text       = element_text(family = "Liberation Serif", face = "bold", size = 10, colour = "black"),
+    strip.background = element_rect(fill = "white", colour = "grey20", linewidth = 0.6),
+    panel.background = element_rect(fill = "white", colour = NA),
+    panel.border     = element_rect(fill = NA, colour = "grey70", linewidth = 0.4),
+    panel.grid.minor = element_blank(),
+    axis.title       = element_text(family = "Carlito", face = "bold", size = 10, colour = "black"),
+    axis.text        = element_text(family = "Carlito", size = 8.5, colour = "black"),
+    legend.position  = "none"
+  )
+
+# Trajectory matrices + k-means clustering
 build_traj_matrix <- function(anova_df, proteomics_df, fraction_name) {
-  sig_genes <- anova_df %>% filter(is_significant == TRUE) %>% pull(gene_symbol)
+  sig_genes <- anova_df %>% dplyr::filter(is_significant == TRUE) %>% dplyr::pull(gene_symbol)
 
   traj <- proteomics_df %>%
-    filter(gene_symbol %in% sig_genes) %>%
-    filter(!is.na(gene_symbol)) %>%
-    distinct(gene_symbol, .keep_all = TRUE) %>%
-    select(gene_symbol, all_of(timepoint_cols)) %>%
-    filter(complete.cases(.))   # k-means needs complete rows
+    dplyr::filter(gene_symbol %in% sig_genes) %>%
+    dplyr::filter(!is.na(gene_symbol)) %>%
+    dplyr::distinct(gene_symbol, .keep_all = TRUE) %>%
+    dplyr::select(gene_symbol, all_of(timepoint_cols)) %>%
+    dplyr::filter(complete.cases(.))
 
-  mat <- traj %>% select(-gene_symbol) %>% as.matrix()
+  mat <- traj %>% dplyr::select(-gene_symbol) %>% as.matrix()
   rownames(mat) <- traj$gene_symbol
 
-  # row-wise z-score (standardise each protein's own trajectory)
   mat_z <- t(scale(t(mat)))
-  mat_z <- mat_z[complete.cases(mat_z), ]  # drop zero-variance rows (all NaN after scaling)
+  mat_z <- mat_z[complete.cases(mat_z), ]
 
   cat(fraction_name, ": ", nrow(mat_z), "significant proteins with complete trajectories\n")
   mat_z
@@ -129,27 +370,18 @@ mat_cellular  <- build_traj_matrix(anova_cellular,  cellular,  "Cellular")
 mat_soluble   <- build_traj_matrix(anova_soluble,   soluble,   "Soluble")
 mat_insoluble <- build_traj_matrix(anova_insoluble, insoluble, "Insoluble")
 
-# =====================================================================
-# 2. Choose optimal k via silhouette score, then run k-means
-# =====================================================================
 choose_k_and_cluster <- function(mat_z, fraction_name, k_range = 2:8, seed = 42) {
   set.seed(seed)
-
   sil_scores <- map_dbl(k_range, function(k) {
     km <- kmeans(mat_z, centers = k, nstart = 25)
     ss <- silhouette(km$cluster, dist(mat_z))
     mean(ss[, 3])
   })
-
   sil_df <- tibble(k = k_range, avg_silhouette = sil_scores)
   best_k <- sil_df$k[which.max(sil_df$avg_silhouette)]
-
-  cat(fraction_name, ": optimal k =", best_k,
-      "(silhouette =", round(max(sil_scores), 3), ")\n")
-
+  cat(fraction_name, ": optimal k =", best_k, "(silhouette =", round(max(sil_scores), 3), ")\n")
   set.seed(seed)
   km_final <- kmeans(mat_z, centers = best_k, nstart = 25)
-
   list(sil_df = sil_df, best_k = best_k, kmeans_fit = km_final)
 }
 
@@ -157,125 +389,21 @@ res_cellular  <- choose_k_and_cluster(mat_cellular,  "Cellular")
 res_soluble   <- choose_k_and_cluster(mat_soluble,   "Soluble")
 res_insoluble <- choose_k_and_cluster(mat_insoluble, "Insoluble")
 
-# ---- optional: silhouette diagnostic plot per fraction ----
-plot_silhouette <- function(res, fraction_name) {
-  ggplot(res$sil_df, aes(x = k, y = avg_silhouette)) +
-    geom_line(colour = fraction_colours[fraction_name], linewidth = 1) +
-    geom_point(size = 2.5, colour = fraction_colours[fraction_name]) +
-    geom_vline(xintercept = res$best_k, linetype = "dashed", colour = "grey40") +
-    labs(title = paste(fraction_name, "- silhouette score by k"),
-         x = "Number of clusters (k)", y = "Average silhouette width") +
-    theme_minimal(base_size = 12)
-}
-
-plot_silhouette(res_cellular,  "Cellular")
-plot_silhouette(res_soluble,   "Soluble")
-plot_silhouette(res_insoluble, "Insoluble")
-
-# =====================================================================
-# 3. Reshape trajectories to long format for plotting
-# =====================================================================
 make_long_traj <- function(mat_z, km_fit, fraction_name) {
   as.data.frame(mat_z) %>%
     rownames_to_column("gene_symbol") %>%
-    mutate(cluster = factor(km_fit$cluster[gene_symbol]),
-           Fraction = fraction_name) %>%
-    pivot_longer(cols = all_of(timepoint_cols),
-                 names_to = "Timepoint", values_to = "z_score") %>%
+    mutate(cluster = factor(km_fit$cluster[gene_symbol]), Fraction = fraction_name) %>%
+    pivot_longer(cols = all_of(timepoint_cols), names_to = "Timepoint", values_to = "z_score") %>%
     mutate(Timepoint = gsub("mean_log2_", "", Timepoint),
            Timepoint = factor(Timepoint, levels = c("D14","D21","M03","M06","M12","M18")),
-           Timepoint_numeric = as.numeric(Timepoint))  # loess needs a numeric x
+           Timepoint_numeric = as.numeric(Timepoint))
 }
 
 long_cellular  <- make_long_traj(mat_cellular,  res_cellular$kmeans_fit,  "Cellular")
 long_soluble   <- make_long_traj(mat_soluble,   res_soluble$kmeans_fit,   "Soluble")
 long_insoluble <- make_long_traj(mat_insoluble, res_insoluble$kmeans_fit, "Insoluble")
 
-# =====================================================================
-# 4. Plot trajectories per cluster: individual proteins (thin, faint)
-#    + loess-smoothed cluster mean (thick)
-# =====================================================================
-plot_trajectories <- function(long_df, fraction_name, n_clusters) {
-  ggplot(long_df, aes(x = Timepoint_numeric, y = z_score, group = gene_symbol)) +
-    geom_line(alpha = 0.08, colour = "grey50") +
-    geom_smooth(aes(group = cluster, colour = cluster), method = "loess",
-                se = TRUE, linewidth = 1.3, span = 0.75) +
-    facet_wrap(~cluster, ncol = n_clusters, labeller = label_both) +
-    scale_x_continuous(breaks = 1:6,
-                        labels = c("D14","D21","M03","M06","M12","M18")) +
-    labs(title = paste(fraction_name, "- protein trajectory clusters"),
-         subtitle = paste("k =", n_clusters, "(silhouette-selected); loess-smoothed cluster trend"),
-         x = "Timepoint", y = "Row-wise z-scored log2 abundance") +
-    theme_minimal(base_size = 13) +
-    theme(legend.position = "none",
-          plot.title = element_text(face = "bold"))
-}
-
-p_traj_cellular  <- plot_trajectories(long_cellular,  "Cellular",  res_cellular$best_k)
-p_traj_soluble   <- plot_trajectories(long_soluble,   "Soluble",   res_soluble$best_k)
-p_traj_insoluble <- plot_trajectories(long_insoluble, "Insoluble", res_insoluble$best_k)
-
-p_traj_cellular
-p_traj_soluble
-p_traj_insoluble
-
-# =====================================================================
-# 5. Save outputs
-# =====================================================================
-ggsave("trajectory_clusters_cellular.pdf",  p_traj_cellular,  width = 12, height = 5)
-ggsave("trajectory_clusters_soluble.pdf",   p_traj_soluble,   width = 12, height = 5)
-ggsave("trajectory_clusters_insoluble.pdf", p_traj_insoluble, width = 12, height = 5)
-
-# cluster membership tables, useful for downstream enrichment
-write.csv(long_cellular  %>% distinct(gene_symbol, cluster), "cellular_cluster_membership.csv",  row.names = FALSE)
-write.csv(long_soluble   %>% distinct(gene_symbol, cluster), "soluble_cluster_membership.csv",   row.names = FALSE)
-write.csv(long_insoluble %>% distinct(gene_symbol, cluster), "insoluble_cluster_membership.csv", row.names = FALSE)
-```
-
-
-
-
----
-title: "trajectory_and_enrichment_figures"
-output: html_notebook
----
-
-```{r setup}
-library(tidyverse)
-library(rrvgo)
-library(GO.db)
-library(org.Mm.eg.db)   # mouse; matches gprofiler2 organism = "mmusculus"
-library(patchwork)
-```
-
-## 0. Dissertation theme and colour palettes
-
-```{r theme}
-dissertation_theme <- theme_minimal(base_size = 12, base_family = "Carlito") +
-  theme(
-    plot.title        = element_text(family = "Liberation Serif", face = "bold", size = 16, hjust = 0.5, colour = "black"),
-    plot.subtitle     = element_text(family = "Carlito", face = "bold", size = 10, hjust = 0.5, colour = "grey30"),
-    strip.text        = element_text(family = "Liberation Serif", face = "bold", size = 10, colour = "black"),
-    strip.background  = element_rect(fill = "white", colour = "grey20", linewidth = 0.6),
-    panel.background  = element_rect(fill = "white", colour = NA),
-    panel.border      = element_rect(fill = NA, colour = "grey70", linewidth = 0.4),
-    panel.grid.minor  = element_blank(),
-    axis.title        = element_text(family = "Carlito", face = "bold", size = 11, colour = "black"),
-    axis.text.x       = element_text(family = "Carlito", face = "bold", size = 9, colour = "black"),
-    axis.text.y       = element_text(family = "Carlito", face = "bold", size = 9.5, lineheight = 0.9, colour = "black"),
-    legend.title      = element_text(family = "Carlito", face = "bold", size = 10, colour = "black"),
-    legend.text       = element_text(family = "Carlito", face = "bold", size = 9, colour = "black"),
-    legend.position   = "none"
-  )
-
-fraction_colours <- c("Cellular" = "#0072B2", "Soluble" = "#E69F00", "Insoluble" = "#009E73")
-cluster_palette  <- c("#0072B2", "#E69F00", "#009E73", "#D55E00",
-                       "#CC79A7", "#F0E442", "#56B4E9", "#999999")
-```
-
-## 1. Trajectory plots (per fraction)
-
-```{r trajectory-function}
+# Trajectory plots
 plot_fraction_trajectories <- function(long_df, fraction_name, n_clusters) {
   ggplot(long_df, aes(x = Timepoint_numeric, y = z_score)) +
     geom_line(aes(group = gene_symbol), alpha = 0.07, colour = "grey40") +
@@ -284,41 +412,76 @@ plot_fraction_trajectories <- function(long_df, fraction_name, n_clusters) {
                 colour = fraction_colours[fraction_name],
                 fill = fraction_colours[fraction_name], alpha = 0.15) +
     facet_wrap(~cluster, nrow = 1, labeller = label_both) +
-    scale_x_continuous(breaks = 1:6,
-                        labels = c("D14","D21","M03","M06","M12","M18")) +
-    labs(
-      title = fraction_name,
-      subtitle = paste0("k = ", n_clusters, " (silhouette-selected)"),
-      x = "Timepoint", y = "z-scored log2 abundance"
-    ) +
+    scale_x_continuous(breaks = 1:6, labels = c("D14","D21","M03","M06","M12","M18")) +
+    labs(title = fraction_name, subtitle = paste0("k = ", n_clusters, " (silhouette-selected)"),
+         x = "Timepoint", y = "z-scored log2 abundance") +
     dissertation_theme +
     theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "bold", size = 8))
 }
-```
 
-```{r trajectory-plots}
-# Requires long_cellular, long_soluble, long_insoluble and
-# res_cellular$best_k, res_soluble$best_k, res_insoluble$best_k from clustering step
 p_traj_cellular  <- plot_fraction_trajectories(long_cellular,  "Cellular",  res_cellular$best_k)
 p_traj_soluble   <- plot_fraction_trajectories(long_soluble,   "Soluble",   res_soluble$best_k)
 p_traj_insoluble <- plot_fraction_trajectories(long_insoluble, "Insoluble", res_insoluble$best_k)
 
-p_traj_cellular
-p_traj_soluble
-p_traj_insoluble
-```
+# Per-gene temporal change magnitude
+compute_change_magnitude <- function(proteomics_df) {
+  proteomics_df %>%
+    dplyr::filter(!is.na(gene_symbol)) %>%
+    dplyr::distinct(gene_symbol, .keep_all = TRUE) %>%
+    dplyr::select(gene_symbol, all_of(timepoint_cols)) %>%
+    dplyr::filter(complete.cases(.)) %>%
+    rowwise() %>%
+    mutate(
+      range_change = max(c_across(all_of(timepoint_cols))) - min(c_across(all_of(timepoint_cols))),
+      total_variation = sum(abs(diff(c_across(all_of(timepoint_cols))))),
+      d14_to_m18_change = abs(mean_log2_M18 - mean_log2_D14)
+    ) %>%
+    ungroup() %>%
+    dplyr::select(gene_symbol, range_change, total_variation, d14_to_m18_change)
+}
 
-## 2. Enrichment term reduction
+magnitude_cellular  <- compute_change_magnitude(cellular)
+magnitude_soluble   <- compute_change_magnitude(soluble)
+magnitude_insoluble <- compute_change_magnitude(insoluble)
 
-```{r enrichment-normalise}
-# Case/hyphenation normalisation + dedup
-# (fixes "Base excision repair" vs "base-excision repair" appearing as two bars)
+# Cluster membership + background gene sets
+membership_cellular  <- long_cellular  %>% distinct(gene_symbol, cluster)
+membership_soluble   <- long_soluble   %>% distinct(gene_symbol, cluster)
+membership_insoluble <- long_insoluble %>% distinct(gene_symbol, cluster)
+
+bg_cellular  <- unique(membership_cellular$gene_symbol)
+bg_soluble   <- unique(membership_soluble$gene_symbol)
+bg_insoluble <- unique(membership_insoluble$gene_symbol)
+
+# GO:BP + KEGG enrichment per cluster
+run_cluster_enrichment <- function(membership_df, background, fraction_name,
+                                    organism = "mmusculus") {
+  clusters <- sort(unique(membership_df$cluster))
+  map_dfr(clusters, function(cl) {
+    genes <- membership_df %>% filter(cluster == cl) %>% pull(gene_symbol)
+    if (length(genes) < 3) return(NULL)
+
+    res <- gost(
+      query = genes, organism = organism, correction_method = "fdr",
+      sources = c("GO:BP", "KEGG"), custom_bg = background, evcodes = TRUE
+    )
+    if (is.null(res)) return(NULL)
+
+    res$result %>%
+      as_tibble() %>%
+      mutate(cluster = as.character(cl), Fraction = fraction_name)
+  })
+}
+
+enrich_cellular  <- run_cluster_enrichment(membership_cellular,  bg_cellular,  "Cellular")
+enrich_soluble   <- run_cluster_enrichment(membership_soluble,   bg_soluble,   "Soluble")
+enrich_insoluble <- run_cluster_enrichment(membership_insoluble, bg_insoluble, "Insoluble")
+
+# GO:BP redundancy reduction (rrvgo)
 prep_enrichment_for_reduction <- function(enrich_df) {
   enrich_df %>%
-    mutate(
-      term_name_norm = str_to_lower(term_name),
-      term_name_norm = str_replace_all(term_name_norm, "-", " ")
-    )
+    mutate(term_name_norm = str_to_lower(term_name),
+           term_name_norm = str_replace_all(term_name_norm, "-", " "))
 }
 
 dedupe_case_variants <- function(enrich_df) {
@@ -328,172 +491,113 @@ dedupe_case_variants <- function(enrich_df) {
     ungroup()
 }
 
-enrich_cellular  <- enrich_cellular  %>% prep_enrichment_for_reduction() %>% dedupe_case_variants()
-enrich_soluble   <- enrich_soluble   %>% prep_enrichment_for_reduction() %>% dedupe_case_variants()
-enrich_insoluble <- enrich_insoluble %>% prep_enrichment_for_reduction() %>% dedupe_case_variants()
-```
-
-```{r}
-# rrvgo redundancy reduction — GO:BP only, per cluster
-# KEGG terms pass through untouched (already deduplicated above)
 reduce_go_redundancy <- function(enrich_df, fraction_name, threshold = 0.7) {
   clusters <- sort(unique(enrich_df$cluster))
-
   map_dfr(clusters, function(cl) {
     cluster_df <- enrich_df %>% filter(cluster == cl)
-
     go_df   <- cluster_df %>% filter(source == "GO:BP")
     kegg_df <- cluster_df %>% filter(source == "KEGG")
-
-    if (nrow(go_df) < 2) {
-      return(bind_rows(go_df, kegg_df))
-    }
-
+    if (nrow(go_df) < 2) return(bind_rows(go_df, kegg_df))
     simMatrix <- tryCatch(
-      calculateSimMatrix(go_df$term_id,
-                          orgdb = "org.Mm.eg.db",
-                          ont = "BP",
-                          method = "Rel"),
+      calculateSimMatrix(go_df$term_id, orgdb = "org.Mm.eg.db", ont = "BP", method = "Rel"),
       error = function(e) NULL
     )
-
     if (is.null(simMatrix) || nrow(simMatrix) < 2) {
       cat(fraction_name, "- Cluster", cl, ": simMatrix failed, keeping all GO terms\n")
       return(bind_rows(go_df, kegg_df))
     }
-
     scores <- setNames(-log10(go_df$p_value), go_df$term_id)
     scores <- scores[rownames(simMatrix)]
-
-    reducedTerms <- reduceSimMatrix(simMatrix, scores,
-                                     threshold = threshold,
-                                     orgdb = "org.Mm.eg.db")
-
+    reducedTerms <- reduceSimMatrix(simMatrix, scores, threshold = threshold, orgdb = "org.Mm.eg.db")
     parent_ids <- unique(reducedTerms$parent)
     go_df_reduced <- go_df %>% filter(term_id %in% parent_ids)
-
-    cat(fraction_name, "- Cluster", cl, ": GO:BP", nrow(go_df),
-        "->", nrow(go_df_reduced), "terms after redundancy reduction\n")
-
+    cat(fraction_name, "- Cluster", cl, ": GO:BP", nrow(go_df), "->", nrow(go_df_reduced), "terms\n")
     bind_rows(go_df_reduced, kegg_df)
   })
 }
 
+enrich_cellular  <- enrich_cellular  %>% prep_enrichment_for_reduction() %>% dedupe_case_variants()
+enrich_soluble   <- enrich_soluble   %>% prep_enrichment_for_reduction() %>% dedupe_case_variants()
+enrich_insoluble <- enrich_insoluble %>% prep_enrichment_for_reduction() %>% dedupe_case_variants()
+
 enrich_cellular_reduced  <- reduce_go_redundancy(enrich_cellular,  "Cellular")
 enrich_soluble_reduced   <- reduce_go_redundancy(enrich_soluble,   "Soluble")
 enrich_insoluble_reduced <- reduce_go_redundancy(enrich_insoluble, "Insoluble")
-```
 
-```{r}
-# Re-score by temporal change magnitude on the reduced term sets
-plot_cellular  <- score_terms_by_magnitude(enrich_cellular_reduced,  magnitude_cellular,  n_top = 10)
-plot_soluble   <- score_terms_by_magnitude(enrich_soluble_reduced,   magnitude_soluble,   n_top = 10)
-plot_insoluble <- score_terms_by_magnitude(enrich_insoluble_reduced, magnitude_insoluble, n_top = 10)
-```
-
-```{r}
-# Flatten list-columns first (fixes "unimplemented type 'list'" error from write.csv)
-flatten_list_cols <- function(df) {
-  df %>%
-    mutate(across(where(is.list), ~map_chr(.x, ~paste(unlist(.x), collapse = ";"))))
+# Score terms by temporal change magnitude 
+score_terms_by_magnitude <- function(enrich_df, magnitude_df, n_top = 5,
+                                      magnitude_metric = "range_change") {
+  enrich_df %>%
+    filter(source %in% c("GO:BP", "KEGG"), p_value < 0.05) %>%
+    mutate(intersection_genes = str_split(intersection, ",")) %>%
+    rowwise() %>%
+    mutate(
+      mean_magnitude = mean(
+        magnitude_df[[magnitude_metric]][magnitude_df$gene_symbol %in% intersection_genes],
+        na.rm = TRUE
+      ),
+      n_intersect_genes = length(intersection_genes)
+    ) %>%
+    ungroup() %>%
+    filter(!is.na(mean_magnitude)) %>%
+    group_by(cluster) %>%
+    slice_max(order_by = mean_magnitude, n = n_top, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(term_label = str_trunc(term_name, 55), cluster = factor(cluster))
 }
 
-write.csv(flatten_list_cols(enrich_cellular_reduced),  "cellular_enrichment_reduced.csv",  row.names = FALSE)
-write.csv(flatten_list_cols(enrich_soluble_reduced),   "soluble_enrichment_reduced.csv",   row.names = FALSE)
-write.csv(flatten_list_cols(enrich_insoluble_reduced), "insoluble_enrichment_reduced.csv", row.names = FALSE)
-```
+plot_cellular  <- score_terms_by_magnitude(enrich_cellular_reduced,  magnitude_cellular)
+plot_soluble   <- score_terms_by_magnitude(enrich_soluble_reduced,   magnitude_soluble)
+plot_insoluble <- score_terms_by_magnitude(enrich_insoluble_reduced, magnitude_insoluble)
 
-## 3. Enrichment barplots (per fraction)
-
-```{r}
-make_flat_enrichment_barplot <- function(plot_df, fraction_name, wrap_width = 40) {
+# Enrichment barplots
+make_magnitude_barplot <- function(plot_df, fraction_name) {
   n_clusters <- length(unique(plot_df$cluster))
-  pal <- setNames(cluster_palette[1:n_clusters], levels(factor(plot_df$cluster)))
+  pal <- setNames(cluster_palette[1:n_clusters], levels(plot_df$cluster))
 
-  plot_df <- plot_df %>%
-    mutate(
-      cluster = factor(cluster),
-      term_label = str_wrap(term_name, width = wrap_width)
-    ) %>%
-    arrange(cluster, desc(mean_magnitude)) %>%
-    mutate(term_label = fct_inorder(term_label))
+  plot_df <- plot_df %>% mutate(term_label = fct_reorder(term_label, mean_magnitude))
 
-  ggplot(plot_df, aes(x = fct_rev(term_label), y = mean_magnitude, fill = cluster)) +
+  ggplot(plot_df, aes(x = term_label, y = mean_magnitude, fill = cluster)) +
     geom_col(width = 0.7) +
     coord_flip() +
-    scale_fill_manual(values = pal, name = "Cluster",
-                       labels = paste("Cluster", levels(plot_df$cluster))) +
-    labs(
-      title = fraction_name,
-      x = NULL, y = "Mean temporal change (log2 range)"
-    ) +
+    facet_wrap(~cluster, scales = "free_y", ncol = 1, labeller = label_both) +
+    scale_fill_manual(values = pal) +
+    labs(x = NULL, y = "Mean temporal change (log2 range, D14\u2192M18)") +
     dissertation_theme +
-    theme(legend.position = "bottom")
+    theme(strip.text = element_text(colour = "grey10"))
 }
-```
 
-```{r}
-p_enrich_cellular  <- make_flat_enrichment_barplot(plot_cellular,  "Cellular")
-p_enrich_soluble   <- make_flat_enrichment_barplot(plot_soluble,   "Soluble")
-p_enrich_insoluble <- make_flat_enrichment_barplot(plot_insoluble, "Insoluble")
+p_enrich_cellular  <- make_magnitude_barplot(plot_cellular,  "Cellular")
+p_enrich_soluble   <- make_magnitude_barplot(plot_soluble,   "Soluble")
+p_enrich_insoluble <- make_magnitude_barplot(plot_insoluble, "Insoluble")
 
-p_enrich_cellular
-p_enrich_soluble
-p_enrich_insoluble
-```
+# Combined portrait figures (trajectory + enrichment)
+build_fraction_figure <- function(p_traj, p_enrich, fraction_name) {
+  (p_traj / p_enrich + plot_layout(heights = c(1, 2.2))) +
+    plot_annotation(
+      title = paste0(fraction_name, " fraction: temporal protein trajectories and GO:BP/KEGG enrichment"),
+      subtitle = "Silhouette-selected k; GO:BP terms rrvgo-reduced; enrichment ranked by mean temporal change of intersecting genes (FDR < 0.05)",
+      tag_levels = "A"
+    ) &
+    theme(
+      plot.tag      = element_text(family = "Liberation Serif", face = "bold", size = 15, colour = "black"),
+      plot.title    = element_text(family = "Liberation Serif", face = "bold", size = 17, hjust = 0.5, colour = "black"),
+      plot.subtitle = element_text(family = "Carlito", face = "bold", size = 10.5, hjust = 0.5, colour = "grey30")
+    )
+}
 
-```{r}
-# Standalone barplot-only figure (all three fractions side by side)
-final_enrichment_figure <- (p_enrich_cellular | p_enrich_soluble | p_enrich_insoluble) +
-  plot_annotation(
-    title = "GO:BP and KEGG enrichment by cluster, ranked by temporal change magnitude",
-    subtitle = "Top 10 terms per cluster within each fraction; GO:BP terms rrvgo-reduced; mean |log2 range D14\u2192M18| of intersecting genes (FDR < 0.05)",
-    tag_levels = "A"
-  ) &
-  theme(
-    plot.tag = element_text(family = "Liberation Serif", face = "bold", size = 15, colour = "black"),
-    plot.title = element_text(family = "Liberation Serif", face = "bold", size = 18, hjust = 0.5, colour = "black"),
-    plot.subtitle = element_text(family = "Carlito", face = "bold", size = 11, hjust = 0.5, colour = "grey30")
-  )
+fig_cellular  <- build_fraction_figure(p_traj_cellular,  p_enrich_cellular,  "Cellular")
+fig_soluble   <- build_fraction_figure(p_traj_soluble,   p_enrich_soluble,   "Soluble")
+fig_insoluble <- build_fraction_figure(p_traj_insoluble, p_enrich_insoluble, "Insoluble")
 
-final_enrichment_figure
-
-ggsave("anova_enrichment_barplots_only.pdf", final_enrichment_figure,
-       width = 24, height = 13, device = cairo_pdf)
-ggsave("anova_enrichment_barplots_only.png", final_enrichment_figure,
-       width = 24, height = 13, dpi = 300, bg = "white")
-```
-
-## 4. Combined figure (trajectories + enrichment stacked, per fraction)
-
-```{r}
-col_cellular  <- p_traj_cellular  / p_enrich_cellular  + plot_layout(heights = c(1, 2.2))
-col_soluble   <- p_traj_soluble   / p_enrich_soluble   + plot_layout(heights = c(1, 2.2))
-col_insoluble <- p_traj_insoluble / p_enrich_insoluble + plot_layout(heights = c(1, 2.2))
+ggsave("fig_cellular_trajectory_enrichment_portrait.pdf",  fig_cellular,  width = 10, height = 16, device = cairo_pdf)
+ggsave("fig_cellular_trajectory_enrichment_portrait.png",  fig_cellular,  width = 10, height = 16, dpi = 300, bg = "white")
+ggsave("fig_soluble_trajectory_enrichment_portrait.pdf",   fig_soluble,   width = 10, height = 16, device = cairo_pdf)
+ggsave("fig_soluble_trajectory_enrichment_portrait.png",   fig_soluble,   width = 10, height = 16, dpi = 300, bg = "white")
+ggsave("fig_insoluble_trajectory_enrichment_portrait.pdf", fig_insoluble, width = 10, height = 16, device = cairo_pdf)
+ggsave("fig_insoluble_trajectory_enrichment_portrait.png", fig_insoluble, width = 10, height = 16, dpi = 300, bg = "white")
 ```
 
 
-combined figure
-
-```{r}
-final_combined_figure <- (col_cellular | col_soluble | col_insoluble) +
-  plot_annotation(
-    title = "Temporal protein trajectories and cluster-level GO:BP/KEGG enrichment",
-    subtitle = "Each fraction clustered independently (silhouette-selected k); GO:BP terms rrvgo-reduced; enrichment ranked by mean temporal change of intersecting genes (FDR < 0.05)",
-    tag_levels = "A"
-  ) &
-  theme(
-    plot.tag = element_text(family = "Liberation Serif", face = "bold", size = 15, colour = "black"),
-    plot.title = element_text(family = "Liberation Serif", face = "bold", size = 18, hjust = 0.5, colour = "black"),
-    plot.subtitle = element_text(family = "Carlito", face = "bold", size = 11, hjust = 0.5, colour = "grey30")
-  )
-
-final_combined_figure
-
-ggsave("trajectories_and_enrichment_combined_reduced.pdf", final_combined_figure,
-       width = 32, height = 16, device = cairo_pdf)
-ggsave("trajectories_and_enrichment_combined_reduced.png", final_combined_figure,
-       width = 32, height = 16, dpi = 300, bg = "white")
-```
 
 

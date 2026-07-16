@@ -3,18 +3,11 @@ title: "R Notebook"
 output: html_notebook
 ---
 
-```{r}
----
-title: "tximport_all"
-output: html_document
-date: "2026-02-10"
----
-```
-
 
 ```{r}
+# /Volumes/Sabrina is my external hard drive where I transferred all my files from the HPC to, as my machine did not have enough space to store, so that's the directory I'm referencing. The data is not available for anyone to run, however I have tried my best to make it clear what my method process was. Please refer to my README for information on how to request access to data. 
 
-# Install packages (only needs to run once)
+# Install packages
 if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
 BiocManager::install(c("tximport", "DESeq2", "rtracklayer"))
 install.packages("rlang")
