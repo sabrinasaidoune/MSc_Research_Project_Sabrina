@@ -94,6 +94,9 @@ Exact software versions, HPC module versions, and key analysis parameters (e.g. 
 
 Analyses were run using a combination of King's College London's **CREATE HPC cluster** (transcriptomic pre-processing: FastQC, cutadapt, Salmon) and local R environments (DESeq2, proteomics statistics, MEFISTO/MOFA2 integration, visualisation).
 
+Raw and processed transcriptomic and proteomic data, including raw mass spectrometry outputs and FASTQ sequencing files, are not publicly available, as permission for their release has not been obtained from the data generators. Requests for access to the underlying data should be directed to Dr Thomas Hopkins or Milan Singh, Reproductive Physiology Laboratory, King's College London.
+
+
 ---
 
 ## Declaration
